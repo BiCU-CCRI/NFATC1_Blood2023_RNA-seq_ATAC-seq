@@ -1,0 +1,17 @@
+# populate with key parameters!
+project_name: "GSEA_NFATc1"
+data_files: 
+  NFATc1: 
+    stimulation_yes_vs_no-genotypeNFATc1_ko.stimulationyes: "https://biomedical-sequencing.at/projects/BSA_0540_CD8_Tcells_cf0138e0b17841be9794ef3c4c5ea76d/hg38/rnaseq_deseq_NFATc1/rnaseq_deseq_NFATc1_contrast_stimulation_yes_vs_no_genotypeNFATc1_ko.stimulationyes_against_intercept_genes.tsv"
+    stimulation_yes_vs_no_forWT: "https://biomedical-sequencing.at/projects/BSA_0540_CD8_Tcells_cf0138e0b17841be9794ef3c4c5ea76d/hg38/rnaseq_deseq_NFATc1/rnaseq_deseq_NFATc1_contrast_stimulation_yes_vs_no_against_intercept_genes.tsv"
+    global_stimulation_yes_vs_no_forWT: "https://biomedical-sequencing.at/projects/BSA_0540_CD8_Tcells_cf0138e0b17841be9794ef3c4c5ea76d/hg38/rnaseq_deseq_global/rnaseq_deseq_global_contrast_stimulation_yes_vs_no_against_intercept_genes.tsv"
+    global_stimulation_yes_vs_no-genotypeNFATc1_ko.stimulationyes: "https://biomedical-sequencing.at/projects/BSA_0540_CD8_Tcells_cf0138e0b17841be9794ef3c4c5ea76d/hg38/rnaseq_deseq_global/rnaseq_deseq_global_contrast_stimulation_yes_vs_no_genotypeNFATc1_ko.stimulationyes_against_intercept_genes.tsv"
+    nfatc1_raw_counts: "https://biomedical-sequencing.at/projects/BSA_0540_CD8_Tcells_cf0138e0b17841be9794ef3c4c5ea76d/hg38/rnaseq_deseq_NFATc1/rnaseq_deseq_NFATc1_counts_raw.tsv"
+    nfatc1_norm_counts: "https://biomedical-sequencing.at/projects/BSA_0540_CD8_Tcells_cf0138e0b17841be9794ef3c4c5ea76d/hg38/rnaseq_deseq_NFATc1/rnaseq_deseq_NFATc1_counts_normalised.tsv"
+    nfatc1_vst_blind: "https://biomedical-sequencing.at/projects/BSA_0540_CD8_Tcells_cf0138e0b17841be9794ef3c4c5ea76d/hg38/rnaseq_deseq_NFATc1/rnaseq_deseq_NFATc1_counts_vst_blind.tsv"
+    nfatc1_vst_model: "https://biomedical-sequencing.at/projects/BSA_0540_CD8_Tcells_cf0138e0b17841be9794ef3c4c5ea76d/hg38/rnaseq_deseq_NFATc1/rnaseq_deseq_NFATc1_counts_vst_model.tsv"
+    nfatc1_samples: "https://biomedical-sequencing.at/projects/BSA_0540_CD8_Tcells_cf0138e0b17841be9794ef3c4c5ea76d/hg38/rnaseq_deseq_NFATc1/rnaseq_deseq_NFATc1_samples.tsv"
+    nfatc1_annotation: "https://biomedical-sequencing.at/projects/BSA_0540_CD8_Tcells_cf0138e0b17841be9794ef3c4c5ea76d/hg38/rnaseq_deseq_NFATc1/rnaseq_deseq_NFATc1_annotation_gene.tsv"
+    nfatc1_contrasts: "https://biomedical-sequencing.at/projects/BSA_0540_CD8_Tcells_cf0138e0b17841be9794ef3c4c5ea76d/hg38/rnaseq_deseq_NFATc1/rnaseq_deseq_NFATc1_contrasts_summary.tsv"
+    nfatc1_lrt: "https://biomedical-sequencing.at/projects/BSA_0540_CD8_Tcells_cf0138e0b17841be9794ef3c4c5ea76d/hg38/rnaseq_deseq_NFATc1/rnaseq_deseq_NFATc1_lrt_summary.tsv"
+ 

@@ -1,0 +1,2675 @@
+---
+title: "GSEA analysis - Sevgi (NFATc1)"
+author: "Peter Repiscak"
+date: '`r format(Sys.time(), "%d %B %Y")`'
+output:
+ html_document:
+  code_folding: hide
+  toc: false
+  toc_float: false
+  theme: united
+always_allow_html: true
+---
+
+Compare annotation done by Michael Schuster with annotation done here
+Check other output files generated!
+filtered bam is input file for peak calling!
+what is whitelist in the filtered?
+check if it makes any difference? filtered and unfiltered?
+clean config file and combine RNAseq and ATACseq config files
+
+TODO:
+GOBP for WT unique peaks top 25 - simialar plot to the following figures
+Check with Florian H. if for the unique peaks we can call the accesible just because they are detected in the WT only
+C:\Users\peter.repiscak\OneDrive - CCRI\Bioinformatics\Work\Bionformatics\Projects\Kaan_Boztug\Sevgi_Michael_NFATc1_TMX1\results_dir\figures
+
+TODO:
+check and understand the selection of background peak sets!!!
+[ ] - for motif analysis we should have used all peaks (to get all motifs); rather than just consensus peaks!!!
+[ ] - for FC calculation check https://github.com/GreenleafLab/chromVAR/issues/15
+
+#FIXME
+[ ] - heatmap is from deviations not variability - check/correct if wrong label somewhere
+
+Prepare methods + add explanation and description for understanding for deviations and variability
+patient renaming:
+atacseq
+P1180 - P1
+P1185 - P2
+RJH - HC1
+MK - HC2
+
+RNAseq:
+double check
+
+ADD:
+QC
+comparison to previous annotation
+methods and references!
+description of some of the steps from the pipeline from CeMM
+filtering - hg38-ENCODE_whitelist.sorted.v3.bed
+
+https://biomedical-sequencing.at/projects/BSA_0612_NFATC1_T_Cells_ce4d4550ea6744bfbd1046b046aec404/atacseq_report/multiqc_report.html
+
+
+TO-DO:
+replace patient sample names to be consistent with the article naming and with file names when constructing from the raw - e.g. atacseq_P_IKZF2-I325V-Hom
+separate analysis into from raw and from processed (as raw requires bam and narrowPeaks!)
+clean docker to production ready with renv.lock
+
+
+1. rewrite library loading
+2. rewrite functions into separate file
+3. rewrite comments/clean
+4. save results files (with checksums)
+5.a rewrite workflow into smaller chunks and include or call similar to Mohamed's approach or use targets? metaflow? - create small manageable and iterable modules that are independent (reading and loading files! cache!)
+5.b rerun modified and see if we get same results!
+6. prepare new renv.lock
+7. prepare new docker
+
+```{r setup, eval=FALSE, include=FALSE}
+# install packages 
+atacseq_packages <- c("bioc::ATACseqQC", "bioc::ChIPseeker", "bioc::ChIPpeakAnno", "bioc::motifmatchr", "bioc::chromVAR", "bioc::ChIPQC", "bioc::MotifDb")
+genomic_ranges_packages <- c("bioc::plyranges")
+plotting_packages <- c("bioc::ComplexHeatmap", "bioc::karyoploteR", "bioc::tracktables", "ggvenn")
+annot_packages <- c("bioc::AnnotationHub", "bioc::biomaRt", "bioc::ensembldb", "bioc::org.Hs.eg.db", "bioc::TxDb.Hsapiens.UCSC.hg38.knownGene")
+functional_packages <- c("bioc::clusterProfiler", "bioc::ReactomePA", "bioc::DESeq2", "bioc::JASPAR2020", "bioc::TFBSTools", "bioc::systemPipeR", "bioc::Rsamtools", "bioc::limma", "bioc::GenomicAlignments")
+other_packages <- c("here", "openxlsx")
+
+renv::install(atacseq_packages)
+renv::install(genomic_ranges_packages)
+renv::install(plotting_packages)
+renv::install(annot_packages)
+renv::install(functional_packages)
+renv::install(other_packages)
+renv::install("tidyverse")  # check version installed in docker image?
+#renv::install("bioc::BSgenome.Hsapiens.UCSC.hg38")
+#BiocManager::install("BSgenome.Hsapiens.UCSC.hg38")
+
+#Error in library.dynam(lib, package, package.lib) : 
+#  shared object 'openxlsx.so' not found
+#renv::install("openxlsx", rebuild=TRUE) # , dependencies=TRUE
+renv::install("pheatmap")
+
+base_dir <- "/home/rstudio/workspace/"
+renv::snapshot(lockfile = file.path(base_dir, "nfatc1_atacseq_renv.lock"))
+renv::status(lockfile = file.path(base_dir, "nfatc1_atacseq_renv.lock"))
+```
+
+
+```{r analysis_parameters, include=FALSE}
+# Specifying parameters here ----
+if(!("renv" %in% installed.packages())){remotes::install_github("rstudio/renv")}
+if(!("import" %in% installed.packages())){renv::install("import")}
+if(!("yaml" %in% installed.packages())){renv::install("yaml")}
+
+# rewrite below!
+base_dir <- "/home/rstudio/workspace/"
+data_dir <- file.path(base_dir, "datasets") 
+resources_dir <- file.path(base_dir, "resources")
+results_dir <- paste0(base_dir, "results_dir/atacseq")  # file.path
+dir.create(results_dir)
+dir.create(resources_dir)
+setwd(base_dir)
+
+#project setup
+# loading config file ----
+config_file <- file.path(base_dir, "nfxx_config.yaml")
+config <- yaml::read_yaml(config_file)
+#config <- yaml::read_yaml(params$config_file)
+
+#project setup
+project_name <- config$project_name
+nthreads <- 4  # for furrr multisession
+
+# this make take a while...
+# https://rstudio.github.io/renv/reference/config.html
+# getOption(x, default = NULL)
+#renv::settings$use.cache()
+# getOption('renv.config.pak.enabled')
+# if the project does not automatically activate run:
+if(Sys.getenv("RENV_PATHS_CACHE") != "/renv_cache") {Sys.setenv(RENV_PATHS_CACHE = "/renv_cache")}
+if(Sys.getenv("RENV_PATHS_LIBRARY") != "/home/rstudio/renv_library") {Sys.setenv(RENV_PATHS_LIBRARY = "/home/rstudio/renv_library")}
+#if(Sys.getenv("RENV_CONFIG_PAK_ENABLED") != "TRUE") {Sys.setenv(RENV_CONFIG_PAK_ENABLED = TRUE)} # add pak, targets and benchmarkme to docker!!!
+# setting root dir
+# 0. renv::activate
+renv::activate(project = base_dir)
+# DO NOT RUN: 
+#renv::init(project = base_dir, bare=TRUE)
+# FOR the first run restore environment and packages from them6_gsea_renv.lock 
+# 1. restore original environment
+renv::restore(project = base_dir, lockfile = file.path(base_dir, "nfatc1_atacseq_renv.lock"), prompt = FALSE)
+#file.copy(from = file.path(base_dir, "them6_gsea_renv.lock"), to = file.path(base_dir, "renv.lock")) # to use with renv::diagnostics()
+```
+
+```{r run parameters, eval=FALSE, include=FALSE}
+#check temp dir
+tempdir()
+
+# run parameters ----
+# add params:
+# add separate document
+# define cutoffs and other settings ----
+# - [ ] move to params: in the yaml definition
+padj_perSample_GOenrich_cutoff <- 0.05
+log2FC_cutoff <- log2(1.3) #log2(1.5)
+padj_cutoff <- 0.1
+motif_padj_cutoff <- 0.05
+# within promoters
+# using 1000 as in Florian's code
+# not using 500 as in the tutorial
+promoter_dist <- 1000  # should be the same as above?!
+tss_dist <- 1000 # within 500 bp of TSS; or 1000bp?
+
+#report options
+knitr::opts_chunk$set(echo = TRUE,
+                      eval = TRUE,
+                      cache.lazy = FALSE,
+                      message=FALSE,
+                      warning=FALSE,
+                      dev = "png",
+                      cache.path = file.path(results_dir,"report","cache/"),
+                      fig.path = file.path(results_dir,"report","files/"))
+options(width=100)
+
+#renv::snapshot()
+```
+
+
+```{r run in the terminal, eval = FALSE, include = FALSE}
+#rmarkdown::render(output_file = stringr::str_replace_all(date(),c(" +"="-", ":"="_")), input = here::here("/home/peter_r/scripts/tiaf1_analysis.Rmd"), output_dir = file.path("/home/peter_r/results/report","html/"))
+
+# rmarkdown::render(input = "/home/peter_r/scripts/tiaf1_analysis.Rmd", output_file = stringr::str_replace_all(date(),c(" +"="-", ":"="_")), output_dir = file.path("/home/peter_r/results/report","html/"))
+```
+
+```{r loading libraries, message=FALSE, eval=TRUE, include=FALSE}
+import::from(.from = here::here("scripts/utils.R"), "save_rds", "digest_match", .character_only=TRUE)
+
+# Docker needs
+
+# Loading functions from packages ----
+# using import to keep clean namespace
+# and explicitly specifying in the code (potentially remove)
+
+# annotation
+import::from(.from = TxDb.Hsapiens.UCSC.hg38.knownGene, TxDb.Hsapiens.UCSC.hg38.knownGene)
+#library("BSgenome.Hsapiens.UCSC.hg38")
+import::from(.from = BSgenome.Hsapiens.UCSC.hg38, BSgenome.Hsapiens.UCSC.hg38)
+import::from(.from = org.Hs.eg.db, org.Hs.eg.db)
+
+# data processing
+import::from(.from = magrittr, "%>%") 
+import::from(.from = rtracklayer, import.bed)
+import::from(.from = readr, read_csv)
+import::from(.from = Rsamtools, BamFileList, ScanBamParam)
+import::from(.from = GenomicRanges, GRangesList, reduce)
+import::from(.from = RColorBrewer, brewer.pal)
+import::from(ggplot2, .all=TRUE) # or just import specific part
+
+
+# Loading custom functions from atacseq_scripts.R ----
+import::from(.from = "atacseq_scripts.R", "remove_blacklisted", "add_flag", "load_peaks_to_GRangesList", "filter_chromosomes_GRangesList") 
+
+
+# [ ] check if renv works import::from - renv::dependencies()
+#  it should still recognize package::method()
+# https://rstudio.github.io/renv/reference/dependencies.html
+
+# otherwise using this for renv to discover
+## delete
+#library("tidyverse")
+#library("rtracklayer")
+#library("readxl")
+#library("GenomicRanges")
+#library("RColorBrewer")
+#library(BSgenome.Hsapiens.UCSC.hg38)  # cite?!
+#library(org.Hs.eg.db)
+#dlibrary(ChIPseeker)
+#library(ChIPQC)
+#library(tracktables)
+#library(DT)
+#library(DESeq2)
+#library(karyoploteR)
+#library(seqLogo)
+#library(JASPAR2020)
+#library(TFBSTools)
+#library(ggseqlogo)
+#library(motifmatchr)
+#library(chromVAR)
+#library(BiocParallel)
+#BiocManager::install("BSgenome.Hsapiens.NCBI.GRCh38")
+# http://bioconductor.org/packages/devel/workflows/vignettes/annotation/inst/doc/Annotation_Resources.html
+#library("BSgenome.Hsapiens.NCBI.GRCh38")  # or directly use NCBI fasta
+#library(furrr)  # do not load as it masks some of key functions
+#class(BSgenome.Hsapiens.UCSC.hg38)
+#metadata(BSgenome.Hsapiens.UCSC.hg38)
+#BiocManager::install("ATACseqQC", "ChIPseeker", "ChIPpeakAnno", "systemPipeR")
+#library("Rsamtools")
+#library("ggplot2")
+#install.packages("ggupset")
+# library(VennDiagram)
+#library("magrittr")
+#library(ggvenn)
+#library("GenomicAlignments")
+
+# ??? are the following used?
+#library(MotifDb)
+#library(Biostrings)
+# library(Rsubread) ? where is this used?
+#library(AnnotationHub)
+#library(ensembldb)
+#library(soGGi)
+#library("ATACseqQC")
+#library("devtools")
+
+
+
+# clean into subsections (as above!)
+import::from(.from = ChIPseeker, readPeakFile, covplot, annotatePeak, plotAnnoBar, plotDistToTSS, plotAnnoPie, upsetplot, as.GRanges)
+import::from(.from = ChIPQC, ChIPQC, flagtagcounts, plotSSD, plotCC, plotRegi, ChIPQCreport)
+import::from(.from = DESeq2, DESeqDataSetFromMatrix, estimateSizeFactors, sizeFactors, counts, DESeq, rlog, plotPCA, plotDispEsts, results)
+import::from(.from = karyoploteR, makeGenesDataFromTxDb, plotKaryotype, addGeneNames, mergeTranscripts, kpPlotGenes)
+import::from(.from = JASPAR2020, JASPAR2020)
+import::from(.from = TFBSTools, getMatrixSet)
+import::from(.from = BiocParallel, register, MulticoreParam, SerialParam)
+import::from(.from = systemPipeR, overLapper, vennPlot, intersectmatrix)
+import::from(.from = Rsamtools, BamFileList, ScanBamParam, FaFile)
+import::from(.from = limma, vennCounts, vennDiagram)
+import::from(.from = ggvenn, ggvenn)
+import::from(.from = GenomicAlignments, summarizeOverlaps)
+import::from(.from = clusterProfiler, enrichGO)
+import::from(.from = GenomeInfoDb, seqlevels, "seqlevels<-", "seqlevelsStyle<-", seqnames, keepSeqlevels, seqlengths)  # seqlevels<- needed in ChIPQC
+import::from(.from = SummarizedExperiment, rowRanges, assay)
+
+
+# update docker!
+
+#saving session info
+#sink(paste0(results_dir, "/session_info.txt"), append = FALSE)
+# print() needed to work when used with 'Source on Save' in RStudio
+# without it, sink() will save an empty file
+# print(sessioninfo::session_info())
+#sink()
+
+# xfun::session_info()
+```
+
+
+```{r loading annotations, message=FALSE, eval=TRUE, include=TRUE}
+# defining main chromosomes ----
+mainChromosomes <- paste0("chr", c(1:22, "X", "Y"))  # , "M"
+
+
+# loading txdb ----
+txdb <- TxDb.Hsapiens.UCSC.hg38.knownGene
+
+# gencode
+#https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_40/gencode.v40.annotation.gtf.gz
+
+# txdb <- GenomicFeatures::makeTxDbFromEnsembl(organism="Homo sapiens",
+#                    release=106,
+#                    circ_seqs=NULL,
+#                    server="ensembldb.ensembl.org",
+#                    username="anonymous", password=NULL, port=0L,
+#                    tx_attrib=NULL)
+
+print(txdb)
+#TxDb object:
+# Db type: TxDb
+# Supporting package: GenomicFeatures
+# Data source: UCSC
+# Genome: hg38
+# Organism: Homo sapiens
+# Taxonomy ID: 9606
+# UCSC Table: knownGene
+# UCSC Track: GENCODE V39
+# Resource URL: http://genome.ucsc.edu/
+# Type of Gene ID: Entrez Gene ID
+# Full dataset: yes
+# miRBase build ID: NA
+# Nb of transcripts: 266064
+# Db created by: GenomicFeatures package from Bioconductor
+# Creation time: 2022-04-07 16:50:30 +0000 (Thu, 07 Apr 2022)
+# GenomicFeatures version at creation time: 1.47.13
+# RSQLite version at creation time: 2.2.11
+# DBSCHEMAVERSION: 1.2
+
+
+# loading blacklisted regions ----
+# make available offline
+# simplify checks below
+backlist_filename <- "hg38.blacklist.bed.gz"
+backlist_filename_md5sum <- "4a58b07c400e8641dc3df79ad6fcf12c"
+blacklist_file_url <- paste0("http://mitra.stanford.edu/kundaje/akundaje/release/blacklists/hg38-human/", backlist_filename)
+
+if (!file.exists(file.path(resources_dir, backlist_filename))) {
+  
+  message("downloading ", backlist_filename)
+  download.file(url = blacklist_file_url,
+                destfile = file.path(resources_dir, backlist_filename))
+  
+  # creating md5sum for file with blacklisted regions
+  message("generating md5sum for ", backlist_filename)
+  backlist_file_conn <- file(file.path(resources_dir, paste0(backlist_filename, ".md5sum")))
+  writeLines(paste(as.vector(tools::md5sum(file.path(resources_dir, backlist_filename))), backlist_filename, sep = " "), backlist_file_conn)
+  close(backlist_file_conn)
+  
+} else if (as.vector(tools::md5sum(file.path(resources_dir, backlist_filename))) == backlist_filename_md5sum){
+  message("md5sum is OK for the existing ", backlist_filename)
+  blacklist <- rtracklayer::import.bed(file.path(resources_dir, backlist_filename))
+} else {
+  message("Something weird happened!")
+  message("md5sum differs for the downloaded ", backlist_filename)
+  message("md5sum should be: ", backlist_filename_md5sum)
+}
+
+
+# online download
+#blacklist_test <- rtracklayer::import.bed("http://mitra.stanford.edu/kundaje/akundaje/release/blacklists/hg38-human/hg38.blacklist.bed.gz")
+
+#identical(blacklist, blacklist_test)  # TRUE
+
+
+```
+
+# Initialization
+### Loading data and metadata
+
+```{r loading data, include=TRUE, eval=TRUE}
+# Loading atac-seq data ----
+
+#TODO:
+# [ ] - add md5sums (ubam, narrowPeaks, bam files, bigwig) of files and metadata file!? - nfxx_bamfiles.md5sums
+
+# loading metadata from excel file
+project_metadata_raw <- readr::read_csv(file = file.path(base_dir, config$data_files$atacseq$metadata))
+ 
+# loading peaks files ----
+narrowPeak_files <- list.files(path = data_dir, pattern = "*_peaks.narrowPeak$", full.names=TRUE, recursive=TRUE)
+narrowPeak_df <- data.frame(narrowPeak_files_path = narrowPeak_files) %>%
+  dplyr::mutate(sample_name = gsub(pattern = "(.+/)(.+)(_peaks.narrowPeak)", replacement = "\\2", narrowPeak_files),
+                narrowPeak_files = gsub(pattern = "(.+/)(.+_peaks.narrowPeak)", replacement = "\\2", narrowPeak_files))
+
+# loading bam files ----
+bam_files <- list.files(path = data_dir, pattern = "*.filtered.bam$", full.names=TRUE, recursive=TRUE)
+bam_df <- data.frame(bam_files_path = bam_files) %>%
+  dplyr::mutate(sample_name = gsub(pattern = "(.+/)(.+)(.filtered.bam)", replacement = "\\2", bam_files),
+                bam_files = gsub(pattern = "(.+/)(.+.filtered.bam)", replacement = "\\2", bam_files))
+
+# updating metadata wiht peak and bam files information
+project_metadata <- project_metadata_raw %>%
+  dplyr::left_join(., narrowPeak_df, by = "sample_name") %>%
+  dplyr::left_join(., bam_df, by = "sample_name") 
+
+rownames(project_metadata) <- project_metadata$sample_name
+```
+
+### Quality control analysis
+
+```{r QC analysis, include=TRUE, eval=TRUE, message=FALSE, warning=FALSE, cache=TRUE}
+# ADD description
+
+sample_names <- project_metadata$sample_name
+
+peak_files <- project_metadata$narrowPeak_files_path
+names(peak_files) <- project_metadata$sample_name
+
+# Loading peaks ----
+peaks_grlist_rds <- file.path(results_dir, paste0(project_name, "_peaks_grlist.rds"))
+peaks_grlist_rds_digest <- file.path(results_dir, paste0(project_name, "_rnk_lists_digest.md5"))
+peaks_grlist_rds_digest_md5sum <- "8ae4e32277711427863c6844cc20002c"  # to fix for final results otherwise source from _digest.md5 file
+
+if (!file.exists(peaks_grlist_rds)) {
+  message("Loading peaks into peaks_grlist...")
+  peak_gr_raw <- load_peaks_to_GRangesList(peak_files)
+  
+  # keeping only main chromosomes ----
+  # remove non-standard chromosomes and mitochondrial!
+  peak_grlist <- filter_chromosomes_GRangesList(granges_list = peak_gr_raw)
+  
+  # saving
+  save_rds(x = peak_grlist,
+           rdsname = peaks_grlist_rds, 
+           digestname = peaks_grlist_rds_digest)
+  
+} else {
+  message("peaks_grlist exists...loading!")
+  
+  # md5_digest them6_gsea_results.rds: 707217f5b76a5db6a36526ac6fce78c9
+  peak_grlist <- readRDS(peaks_grlist_rds) 
+  peak_grlists_md5 <- digest::digest(peaks_grlist_rds_digest, algo = "md5")
+
+  # check if correct data is loaded in case of missing _digest.md5
+  if (digest_match(x = peak_grlist, digestfile = peaks_grlist_rds_digest)) {
+    # checking for match with _digest.md5
+      message("loaded data md5 matches md5 in the digest file")
+  }  
+  
+  # check if md5 corresponds to the final (production) md5
+  if (!is.null(peaks_grlist_rds_digest_md5sum) & peak_grlists_md5 != peaks_grlist_rds_digest_md5sum) {
+    warning("md5 is: ", peak_grlists_md5, " and it differs from expected production file md5: ", peaks_grlist_rds_digest_md5sum)
+  }
+}
+
+# Performing QC analysis ----
+# TODO:
+# [ ] - rewrite QC into functions and refactor this section
+# [ ] - add targets pipeline
+
+qc_rds <- file.path(results_dir, paste0(project_name, "_QCresults.rds"))
+qc_rds_digest <- file.path(results_dir, paste0(project_name, "_QCresults_digest.md5"))
+qc_rds_digest_md5sum <- "8ae4e32277711427863c6844cc20002c"  # to fix for final results otherwise source from _digest.md5 file
+if (!file.exists(qc_rds)){
+  # coverage over chromosomes
+  # also use GRangesList to calculate per sample
+  # https://guangchuangyu.github.io/2016/02/covplot-supports-grangeslist/
+  peak_gr_per_chr <- ChIPseeker::covplot(peak = peak_grlist,
+                                         title ="ATAC-seq peaks coverage over chromosomes")
+  
+  #! store
+  peaks_per_chr_plot <- peak_gr_per_chr + facet_grid(chr ~ .id)  # remove non-main chromosomes
+  
+  # looking at annotated regions 
+  peak_grlist_annot <- lapply(peak_grlist, ChIPseeker::annotatePeak, 
+                         TxDb=txdb,
+                         tssRegion=c(-3000, 3000),
+                         level = "gene",  
+                         annoDb="org.Hs.eg.db", 
+                         verbose=FALSE)
+  
+  peak_grlist_annot_bar_plot <- ChIPseeker::plotAnnoBar(peak_grlist_annot)
+  peak_grlist_annot_distTSS_plot <- ChIPseeker::plotDistToTSS(peak_grlist_annot,
+              title="Distribution of ATAC-seq peaks \nrelative to TSS")
+  
+  ggsave(peak_grlist_annot_bar_plot, filename = file.path(results_dir, "/peak_grlist_annot_bar_plot.png"))
+  ggsave(peak_grlist_annot_bar_plot, filename = file.path(results_dir, "/peak_grlist_annot_bar_plot.pdf"))
+  ggsave(peak_grlist_annot_distTSS_plot, filename = file.path(results_dir, "/peak_grlist_annot_distTSS_plot.png"))
+   
+  # constructing ChIPQCexperiment object
+  atacseq_experiment_df <- project_metadata %>%
+    dplyr::select(sample_name, genotype, bam_files_path, narrowPeak_files_path) %>%
+    dplyr::rename(SampleID = sample_name, 
+                  Condition = genotype,
+                  bamReads = bam_files_path,
+                  Peaks = narrowPeak_files_path) %>%
+    dplyr::mutate(PeakCaller = "narrow")
+  
+  # consensus QC ----
+  # quite computationally expensive so save in a separate .RData
+  # TODO:
+  # run also ChIPQC in consensus mode!
+  #library(ChIPQC) # !!! use import
+  # FIXME:
+  # potential issue with bam files?! https://support.bioconductor.org/p/112963/
+  # potential issue with blacklist? https://support.bioconductor.org/p/97738/
+  atacseq_experiment_df_filt <- atacseq_experiment_df %>%
+    dplyr::mutate(Factor=Condition,
+                  bamReads = gsub(pattern="\\.filtered", replacement = "", bamReads))
+  blacklist_ensembl <- blacklist
+  seqlevelsStyle(blacklist_ensembl) <- "Ensembl"
+  atacseqQC <- ChIPQC::ChIPQC(atacseq_experiment_df_filt,
+                              annotation="hg38",
+                              chromosomes = "chr1",  # mainChromosomes
+                              consensus=TRUE, # TRUE?
+                              blacklist = blacklist_ensembl)
+  
+  atacseqQC_metrics <- as.data.frame(QCmetrics(atacseqQC))
+  atacseqQC_SSDplot <- ChIPQC::plotSSD(atacseqQC) + xlim(0.13, 0.18)  # Standardized Standard Deviation
+  # SSD is a measure of standard deviation of signal across the genome with higher scores reflecting significant pile-up of reads. SSD can therefore be used to assess both the extent of ultra high signals and the signal
+  atacseqQC_CCplot <- ChIPQC::plotCC(atacseqQC, facetBy = "Sample")  # Cross-coverage plot
+  
+  ggsave(atacseqQC_SSDplot, filename = file.path(results_dir, "/atacseqQC_SSDplot.png"))
+  ggsave(atacseqQC_CCplot, filename = file.path(results_dir, "/atacseqQC_CCplot.png"))
+  
+  # duplication rate
+  atacseqQC_flags <- ChIPQC::flagtagcounts(atacseqQC)
+  #atacseqQC_flags["DuplicateByChIPQC", ]/atacseqQC_flags["Mapped", ]
+  
+  # review distribution of reads across features
+  atacseqQC_feature_dist <- ChIPQC::plotRegi(atacseqQC) + coord_flip() + theme_bw()
+  ggsave(atacseqQC_feature_dist, filename = file.path(results_dir, "/atacseqQC_feature_dist.png"))
+  
+  # add to report
+  ChIPQC::ChIPQCreport(object = atacseqQC, 
+                       reportName="ATACseq_QCreport",
+                       #facetBy=c("sample_group"),
+                       reportFolder = paste0(results_dir, "/ATACseq_QCreport"))
+  
+  message("Saving QC_results")
+  QCresults <- list(peaks_per_chr_plot=peaks_per_chr_plot, 
+                    atacseqQC=atacseqQC, 
+                    atacseqQC_metrics=atacseqQC_metrics, 
+                    atacseqQC_SSDplot=atacseqQC_SSDplot, 
+                    atacseqQC_flags=atacseqQC_flags)
+  
+  save_rds(x = QCresults,
+           rdsname = qc_rds, 
+           digestname = qc_rds_digest)
+  
+} else {
+  message("Loading QC_results")
+  
+  # md5_digest them6_gsea_results.rds: 707217f5b76a5db6a36526ac6fce78c9
+  QCresults <- readRDS(qc_rds) 
+  QCresults_md5 <- digest::digest(qc_rds_digest, algo = "md5")
+
+  peaks_per_chr_plot <- QCresults$peaks_per_chr_plot
+  atacseqQC <- QCresults$atacseqQC 
+  atacseqQC_metrics <- QCresults$atacseqQC_metrics
+  atacseqQC_SSDplot <- QCresults$atacseqQC_SSDplot
+  atacseqQC_flags <- QCresults$atacseqQC_flags
+  
+  # check if correct data is loaded in case of missing _digest.md5
+  if (digest_match(x = QCresults, digestfile = qc_rds_digest)) {
+    # checking for match with _digest.md5
+      message("loaded data md5 matches md5 in the digest file")
+  }  
+  
+  # check if md5 corresponds to the final (production) md5
+  if (!is.null(qc_rds_digest_md5sum) & QCresults_md5 != qc_rds_digest_md5sum) {
+    warning("md5 is: ", QCresults_md5, " and it differs from expected production file md5: ", qc_rds_digest_md5sum)
+  }
+}
+
+
+# Pre-processing ----
+# removing blacklist regions per sample
+# removing blacklist regions per sample set:
+#    to generate universe of genes for enrichment?! 
+#    for downstream differential accessibility analysis
+# check if remove blacklist per sample = remove blacklist per combined
+
+if (!file.exists(paste0(results_dir, "/peak_grlist_filt.RDS"))){
+  
+  peak_gr_filt_list <- purrr::map(.x = sample_names, .f = function(sample_name) {
+    message("Removing blaclisted regions from: ", sample_name)
+
+    remove_blacklisted(peak_gr = peak_grlist[[sample_name]])
+    
+  }) %>% setNames(sample_names)
+  
+  peak_grlist_filt <- GenomicRanges::GRangesList(peak_gr_filt_list)
+  message("Saving peak_grlist_filt")
+  saveRDS(peak_grlist_filt, file = paste0(results_dir, "/peak_grlist_filt.RDS"))
+  
+} else {
+  message("Loading peak_grlist_filt")
+  peak_grlist_filt <- readRDS(file = paste0(results_dir, "/peak_grlist_filt.RDS"))
+}
+
+# Annotating peaks ----
+
+if (!file.exists(paste0(results_dir, "/allPeaksSet_filt_nR_annot.RData"))){
+  allPeaksSet_filt_nR <- GenomicRanges::reduce(unlist(peak_grlist_filt)) 
+  peaks_overlap <- list()
+  for (i in 1:length(peak_grlist_filt)) {
+    peaks_overlap[[i]] <-  IRanges::overlapsAny(allPeaksSet_filt_nR, peak_grlist_filt[[i]])
+  }
+  overlapMatrix <- do.call(cbind, peaks_overlap)
+  colnames(overlapMatrix) <- names(peak_grlist_filt)  # project_metadata$sample_name
+  mcols(allPeaksSet_filt_nR) <- overlapMatrix
+  
+  # annotating to get gene universe for enrichment ----
+  # txdb_ah_ensembl, txdb
+  length(allPeaksSet_filt_nR)
+  # annotating to gene!
+  # how does results differ when annotating to gene or transcript?!
+  allPeaksSet_filt_nR_annot <- ChIPseeker::annotatePeak(peak = allPeaksSet_filt_nR,
+                                                        tssRegion=c(-3000, 3000),
+                                                        TxDb=txdb, 
+                                                        level = "gene",  # "transcript" or "gene"; default is transcript
+                                                        annoDb="org.Hs.eg.db")
+  
+  allPeaksSet_filt_nR_annot_gr <- as.GRanges(allPeaksSet_filt_nR_annot)
+  # defining unique identifier as a combination of entrezID_chr_start_end
+  allPeaksSet_filt_nR_annot_gr$unique_geneID <- paste(allPeaksSet_filt_nR_annot_gr$geneId, as.character(seqnames(allPeaksSet_filt_nR_annot_gr)), IRanges::start(allPeaksSet_filt_nR_annot_gr), IRanges::end(allPeaksSet_filt_nR_annot_gr), sep = "_")
+  message("Duplicated unique_geneID: ", sum(duplicated(allPeaksSet_filt_nR_annot_gr$unique_geneID)))
+  allPeaksSet_filt_nR_annot_df <- as.data.frame(allPeaksSet_filt_nR_annot_gr)
+  
+  message("Saving allPeaksSet_filt_nR_annot")
+  save(allPeaksSet_filt_nR, allPeaksSet_filt_nR_annot, allPeaksSet_filt_nR_annot_gr, allPeaksSet_filt_nR_annot_df, file = paste0(results_dir, "/allPeaksSet_filt_nR_annot.RData"))
+} else {
+  message("Loading allPeaksSet_filt_nR_annot")
+  load(file = paste0(results_dir, "/allPeaksSet_filt_nR_annot.RData"))
+}
+
+# assesing distanceToTSS of annotated features 
+allPeaksSet_filt_nR_annot_df_perGroup <- allPeaksSet_filt_nR_annot_df %>%
+  dplyr::select(PID1185, PID1180, ND_RJH, ND_MK, distanceToTSS) %>%
+  tidyr::pivot_longer(., -distanceToTSS, names_to = "sample_name", values_to = "detected") %>%
+  dplyr::filter(detected == TRUE)
+
+sum(abs(allPeaksSet_filt_nR_annot_df_perGroup$distanceToTSS) > 50000)/length(allPeaksSet_filt_nR_annot_df_perGroup$distanceToTSS)
+# there are few extreme distances to TSS - investigate
+
+#! store
+annot_pie_plot <- ChIPseeker::plotAnnoPie(allPeaksSet_filt_nR_annot)
+annot_bar_plot <- ChIPseeker::plotAnnoBar(allPeaksSet_filt_nR_annot)
+
+annot_distTSS_plot <- ChIPseeker::plotDistToTSS(allPeaksSet_filt_nR_annot,
+              title="Distribution of ATAC-seq peaks \nrelative to TSS")
+
+ggsave(annot_distTSS_plot, filename = file.path(results_dir, "/annot_distTSS_plot.png"))
+ggsave(annot_bar_plot, filename = file.path(results_dir, "/annot_bar_plot.png"))
+
+png(filename = file.path(results_dir, "/annot_pie_plot.png"))
+ChIPseeker::plotAnnoPie(allPeaksSet_filt_nR_annot)
+dev.off()
+
+pdf(file = file.path(results_dir, "/annot_pie_plot.pdf"))
+ChIPseeker::plotAnnoPie(allPeaksSet_filt_nR_annot)
+dev.off()
+
+# defining gene universe used for enrichment 
+gene_universe <- unique(allPeaksSet_filt_nR_annot_df$geneId)
+length(gene_universe)
+
+# Qualitative analysis: per sample  ----
+# subsetting peaks to those around TSS regions (+/- 1000) for functional analysis
+
+venncounts_object <- limma::vennCounts(mcols(allPeaksSet_filt_nR))
+limma::vennDiagram(venncounts_object, main="Overlapping peaks")
+
+png(filename = file.path(results_dir, "/overlapping_peaks.png"))
+limma::vennDiagram(venncounts_object, main="Overlapping peaks")
+dev.off()
+
+# FIXME:
+# tibble::as_tibble(mcols(allPeaksSet_filt_nR))
+peak_overlaps_df <- tibble::as_tibble(mcols(allPeaksSet_filt_nR)) %>%
+  dplyr::mutate(row_sums = rowSums(.)) %>%
+  tibble::rowid_to_column(var="rowid") %>%
+  dplyr::mutate(value=paste0("peak", rowid)) %>%
+  dplyr::select(rowid, value, PID1185, PID1180, ND_RJH, ND_MK) %>%
+  dplyr::mutate(PID1185 = ifelse(PID1185, paste0("peak",rowid), NA),
+                PID1180 = ifelse(PID1180, paste0("peak",rowid), NA),
+                ND_RJH = ifelse(ND_RJH, paste0("peak",rowid), NA),
+                ND_MK = ifelse(ND_MK, paste0("peak",rowid), NA))
+
+#TODO:
+# [ ] - check why this differ from the limma venn?
+peak_overlaps_list <- list(PID1185=peak_overlaps_df$PID1185[!is.na(peak_overlaps_df$PID1185)],
+                 PID1180=peak_overlaps_df$PID1180[!is.na(peak_overlaps_df$PID1180)],
+                 ND_RJH=peak_overlaps_df$ND_RJH[!is.na(peak_overlaps_df$ND_RJH)],
+                 ND_MK=peak_overlaps_df$ND_MK[!is.na(peak_overlaps_df$ND_MK)])
+lapply(peak_overlaps_list, length)
+
+peaks_venn <- ggvenn::ggvenn(
+  peak_overlaps_list, 
+  #fill_color = c("#0073C2FF", "#0073C2FF", "#EFC000FF"),
+  stroke_size = 0.5) + labs(title ="Overlapping ATAC-seq peaks")
+
+ggsave(peaks_venn, filename = file.path(results_dir, "/overlapping_peaks.png"))
+ggsave(peaks_venn, filename = file.path(results_dir, "/overlapping_peaks.pdf"))
+
+```
+
+### Per sample analysis
+
+Analysis of peaks unique to each of the samples.
+
+```{r perSample analysis, include=TRUE, eval=TRUE, cache=TRUE}
+# creating combined reduced object:
+#   used to define gene universe for enrichment analysis
+#   used to find consensus peaks
+
+#occurrences <- rowSums(as.data.frame(elementMetadata(nrToCount)))
+# in two and more samples!
+#consensusToCount <- nrToCount[occurrences >= 2, ]  # potentially ignore Clone?!
+unique_occurences <- rowSums(as.data.frame(elementMetadata(allPeaksSet_filt_nR))) == 1
+gene_universe <- unique(allPeaksSet_filt_nR_annot_df$geneId)
+length(gene_universe)
+
+#TODO:
+# [ ] - add per mut vs germline
+# [ ] - save results of this enrichment!!!
+
+# venncounts_object <- limma::vennCounts(mcols(allPeaksSet_filt_nR_annot_gr))
+# limma::vennDiagram(venncounts_object, main="Overlapping peaks")
+#peaks_occurences <- rowSums(allPeaksSet_filt_nR_annot_gr$ND_RJH)
+NFATc1_mut_only_anyP <- (allPeaksSet_filt_nR_annot_gr$ND_RJH == FALSE) & (allPeaksSet_filt_nR_annot_gr$ND_MK == FALSE)
+NFATc1_mut_only_bothP <- (allPeaksSet_filt_nR_annot_gr$ND_RJH == FALSE) & (allPeaksSet_filt_nR_annot_gr$ND_MK == FALSE) & (allPeaksSet_filt_nR_annot_gr$PID1185 == TRUE) & (allPeaksSet_filt_nR_annot_gr$PID1180 == TRUE)
+WT_only_anyP <- (allPeaksSet_filt_nR_annot_gr$PID1185 == FALSE) & (allPeaksSet_filt_nR_annot_gr$PID1180 == FALSE)
+
+peaks_NFATc1_mut_only <- as.data.frame(allPeaksSet_filt_nR_annot_gr[NFATc1_mut_only_anyP]) %>%  
+  dplyr::mutate(peakOnly = "NFATc1_mut")
+
+peaks_NFATc1_mut_only_bothP <- as.data.frame(allPeaksSet_filt_nR_annot_gr[NFATc1_mut_only_bothP]) %>%  
+  dplyr::mutate(peakOnly = "NFATc1_mut_bothP")
+
+peaks_WT_only <- as.data.frame(allPeaksSet_filt_nR_annot_gr[WT_only_anyP]) %>%  
+  dplyr::mutate(peakOnly = "WT")
+
+# Only in patient
+# peaks_PID1185_only <- as.data.frame(allPeaksSet_filt_nR_annot_gr[(allPeaksSet_filt_nR_annot_gr$PID1185 == TRUE) & unique_occurences]) %>%  
+#   dplyr::mutate(peakOnly = "PID1185")
+# 
+# peaks_PID1180_only <- as.data.frame(allPeaksSet_filt_nR_annot_gr[(allPeaksSet_filt_nR_annot_gr$PID1180 == TRUE) & unique_occurences]) %>%  
+#   dplyr::mutate(peakOnly = "PID1180")
+
+# Only in ND1
+# 
+# peaks_ND_RJH_only <- as.data.frame(allPeaksSet_filt_nR_annot_gr[(allPeaksSet_filt_nR_annot_gr$ND_RJH == TRUE) & unique_occurences]) %>%  
+#   dplyr::mutate(peakOnly = "ND_RJH")
+# 
+# # Only in ND2
+# peaks_ND_MK_only <- as.data.frame(allPeaksSet_filt_nR_annot_gr[(allPeaksSet_filt_nR_annot_gr$ND_MK == TRUE) & unique_occurences]) %>%  
+#   dplyr::mutate(peakOnly = "ND_MK")
+
+# enriching for genes found in unique peaks ----
+#genes_overlap <- as.data.frame(allPeaksSet_filt_nR_annot_gr) do all at once!
+# genes_overlap <- dplyr::bind_rows(peaks_PID1185_only, peaks_PID1180_only, peaks_ND_RJH_only, peaks_ND_MK_only) 
+# table(genes_overlap$peakOnly)  
+genes_overlap <- dplyr::bind_rows(peaks_NFATc1_mut_only, peaks_WT_only) 
+genes_overlap_bothP <- dplyr::bind_rows(peaks_NFATc1_mut_only_bothP, peaks_WT_only) 
+table(genes_overlap$peakOnly)  
+table(genes_overlap_bothP$peakOnly)  
+
+genes_overlap_toEnrich_df <- genes_overlap %>%
+  dplyr::group_by(peakOnly) %>%
+  dplyr::summarise(unique_genes = list(unique(geneId)))
+
+genes_overlap_toEnrich_df_bothP <- genes_overlap_bothP %>%
+  dplyr::group_by(peakOnly) %>%
+  dplyr::summarise(unique_genes = list(unique(geneId)))
+
+lapply(genes_overlap_toEnrich_df$unique_genes, length)
+lapply(genes_overlap_toEnrich_df_bothP$unique_genes, length)
+
+genes_overlap_toEnrich <- genes_overlap_toEnrich_df$unique_genes
+names(genes_overlap_toEnrich) <- genes_overlap_toEnrich_df$peakOnly
+
+genes_overlap_toEnrich_bothP <- genes_overlap_toEnrich_df_bothP$unique_genes
+names(genes_overlap_toEnrich_bothP) <- genes_overlap_toEnrich_df_bothP$peakOnly
+
+# identifying patient unique genes within N bp from TSS
+genes_overlap_toEnrich_vennset <- systemPipeR::overLapper(genes_overlap_toEnrich, type="vennsets")
+genes_overlap_toEnrich_intersect <- systemPipeR::overLapper(genes_overlap_toEnrich, type="intersects")
+vennplot_example <- systemPipeR::vennPlot(genes_overlap_toEnrich_vennset, mymain="Overlapping genes between sample specific peaks")
+
+# bothP
+genes_overlap_toEnrich_vennset_bothP <- systemPipeR::overLapper(genes_overlap_toEnrich_bothP, type="vennsets")
+genes_overlap_toEnrich_intersect_bothP <- systemPipeR::overLapper(genes_overlap_toEnrich_bothP, type="intersects")
+vennplot_example_bothP <- systemPipeR::vennPlot(genes_overlap_toEnrich_vennset_bothP, mymain="Overlapping genes between sample specific peaks")
+
+genes_overlap_toEnrich_intersect_df <- as.data.frame(systemPipeR::intersectmatrix(genes_overlap_toEnrich_vennset)) %>%
+  dplyr::mutate(overlaps = rowSums(.)) %>%
+  tibble::rownames_to_column(var = "geneId") %>%
+  #dplyr::filter(overlaps == 1) %>% not filtering for unique genes otherwise not enough significant enriching
+  dplyr::select(-overlaps) %>%
+  tidyr::pivot_longer(., -geneId, names_to = "sample_name", values_to = "geneOnly") %>%
+  dplyr::filter(geneOnly == 1) %>%
+  dplyr::group_by(sample_name) %>%
+  dplyr::summarise(unique_genes = list(geneId))
+
+# bothP
+genes_overlap_toEnrich_intersect_df_bothP <- as.data.frame(systemPipeR::intersectmatrix(genes_overlap_toEnrich_vennset_bothP)) %>%
+  dplyr::mutate(overlaps = rowSums(.)) %>%
+  tibble::rownames_to_column(var = "geneId") %>%
+  #dplyr::filter(overlaps == 1) %>% not filtering for unique genes otherwise not enough significant enriching
+  dplyr::select(-overlaps) %>%
+  tidyr::pivot_longer(., -geneId, names_to = "sample_name", values_to = "geneOnly") %>%
+  dplyr::filter(geneOnly == 1) %>%
+  dplyr::group_by(sample_name) %>%
+  dplyr::summarise(unique_genes = list(geneId))
+
+unique_genes_toEnrich <- genes_overlap_toEnrich_intersect_df$unique_genes
+names(unique_genes_toEnrich) <- genes_overlap_toEnrich_intersect_df$sample_name
+lapply(unique_genes_toEnrich, length)
+
+# bothP
+unique_genes_toEnrich_bothP <- genes_overlap_toEnrich_intersect_df_bothP$unique_genes
+names(unique_genes_toEnrich_bothP) <- genes_overlap_toEnrich_intersect_df_bothP$sample_name
+lapply(unique_genes_toEnrich_bothP, length)
+
+# enriching for GO-BP
+# not a lot of significant go terms?! -> enriching first then filtering on go terms!?
+enrichment_names <- names(unique_genes_toEnrich)
+perSample_GOBP_enrich_list <- purrr::map(.x = names(unique_genes_toEnrich), .f = function(sample_name) {
+  message("Enriching GOBP for unique genes in: ", sample_name)
+  
+  clusterProfiler::enrichGO(gene = unique_genes_toEnrich[[sample_name]],
+                universe      = gene_universe,
+                OrgDb         = org.Hs.eg.db,
+                ont           = "BP",  # MF, CC, BP, ALL
+                pAdjustMethod = "BH", 
+                pvalueCutoff  = 1,
+                qvalueCutoff  = 1,
+                readable      = TRUE)
+  
+}) %>% setNames(names(unique_genes_toEnrich))
+
+# bothP
+enrichment_names_bothP <- names(unique_genes_toEnrich_bothP)
+perSample_GOBP_enrich_list_bothP <- purrr::map(.x = names(unique_genes_toEnrich_bothP), .f = function(sample_name) {
+  message("Enriching GOBP for unique genes in: ", sample_name)
+  
+  clusterProfiler::enrichGO(gene = unique_genes_toEnrich_bothP[[sample_name]],
+                universe      = gene_universe,
+                OrgDb         = org.Hs.eg.db,
+                ont           = "BP",  # MF, CC, BP, ALL
+                pAdjustMethod = "BH", 
+                pvalueCutoff  = 1,
+                qvalueCutoff  = 1,
+                readable      = TRUE)
+  
+}) %>% setNames(names(unique_genes_toEnrich_bothP))
+
+# identify significant go terms
+perSample_GOBP_enrich_df <- purrr::map(.x=perSample_GOBP_enrich_list, .f = function(enrich_res){
+  as.data.frame(enrich_res) 
+}) %>% setNames(names(perSample_GOBP_enrich_list))
+
+# bothP
+perSample_GOBP_enrich_df_bothP <- purrr::map(.x=perSample_GOBP_enrich_list_bothP, .f = function(enrich_res){
+  as.data.frame(enrich_res) 
+}) %>% setNames(names(perSample_GOBP_enrich_list_bothP))
+
+perSample_GOBP_enrich_df_signif <- purrr::map(.x=perSample_GOBP_enrich_list, .f = function(enrich_res){
+  enrich_res_df_signif <- as.data.frame(enrich_res) %>% 
+    dplyr::filter(p.adjust < padj_perSample_GOenrich_cutoff)
+  return(enrich_res_df_signif)
+}) %>% setNames(names(perSample_GOBP_enrich_list))
+
+# bothP
+perSample_GOBP_enrich_df_signif_bothP <- purrr::map(.x=perSample_GOBP_enrich_list_bothP, .f = function(enrich_res){
+  enrich_res_df_signif <- as.data.frame(enrich_res) %>% 
+    dplyr::filter(p.adjust < padj_perSample_GOenrich_cutoff)
+  return(enrich_res_df_signif)
+}) %>% setNames(names(perSample_GOBP_enrich_list_bothP))
+
+perSample_GOBP_enrich_df_signif_ID <- purrr::map(.x=perSample_GOBP_enrich_df_signif, .f = function(enrich_res){
+    dplyr::pull(enrich_res, ID)
+}) %>% setNames(names(perSample_GOBP_enrich_df_signif))
+
+# bothP
+perSample_GOBP_enrich_df_signif_ID_bothP <- purrr::map(.x=perSample_GOBP_enrich_df_signif_bothP, .f = function(enrich_res){
+    dplyr::pull(enrich_res, ID)
+}) %>% setNames(names(perSample_GOBP_enrich_df_signif_bothP))
+
+lapply(perSample_GOBP_enrich_df_signif_ID, length)
+lapply(perSample_GOBP_enrich_df_signif_ID_bothP, length)
+
+perSample_GOBP_enrich_signif_vennset <- systemPipeR::overLapper(perSample_GOBP_enrich_df_signif_ID, type="vennsets")
+perSample_GOBP_enrich_signif_intersect <- systemPipeR::intersectmatrix(systemPipeR::overLapper(perSample_GOBP_enrich_df_signif_ID, type="intersects"))
+systemPipeR::vennPlot(perSample_GOBP_enrich_signif_vennset, mymain="Overlapping GOBP terms between sample specific peaks", type="ellipse")
+
+# bothP
+perSample_GOBP_enrich_signif_vennset_bothP <- systemPipeR::overLapper(perSample_GOBP_enrich_df_signif_ID_bothP, type="vennsets")
+perSample_GOBP_enrich_signif_intersect_bothP <- systemPipeR::intersectmatrix(systemPipeR::overLapper(perSample_GOBP_enrich_df_signif_ID_bothP, type="intersects"))
+systemPipeR::vennPlot(perSample_GOBP_enrich_signif_vennset_bothP, mymain="Overlapping GOBP terms between sample specific peaks", type="ellipse")
+
+png(filename = file.path(results_dir, "/perSample_GOBP_enrich_df_signif_ID.png"))
+systemPipeR::vennPlot(perSample_GOBP_enrich_signif_vennset, mymain="Overlapping GOBP terms between sample specific peaks", type="ellipse")
+dev.off()
+
+# bothP
+png(filename = file.path(results_dir, "/perSample_bothP_GOBP_enrich_df_signif_ID.png"))
+systemPipeR::vennPlot(perSample_GOBP_enrich_signif_vennset_bothP, mymain="Overlapping GOBP terms between sample specific peaks - bothP", type="ellipse")
+dev.off()
+
+perSample_GOBP_enrich_df_signif_collapse <- dplyr::bind_rows(perSample_GOBP_enrich_df_signif) %>%
+  dplyr::select(ID, Description) %>%
+  dplyr::distinct(.)
+
+# bothP
+perSample_GOBP_enrich_df_signif_collapse_bothP <- dplyr::bind_rows(perSample_GOBP_enrich_df_signif_bothP) %>%
+  dplyr::select(ID, Description) %>%
+  dplyr::distinct(.)
+
+perSample_GOBP_enrich_signif_intersect_df <- as.data.frame(perSample_GOBP_enrich_signif_intersect) %>%
+  dplyr::mutate(overlaps = rowSums(.)) %>%
+  dplyr::mutate(NFATc1_mut_Only = ifelse(overlaps == 1 & NFATc1_mut == 1, TRUE, FALSE)) %>%
+  tibble::rownames_to_column(var="ID") %>%
+  dplyr::left_join(., perSample_GOBP_enrich_df_signif_collapse, by = "ID") %>%
+  dplyr::arrange(desc(NFATc1_mut_Only))
+
+# bothP
+perSample_GOBP_enrich_signif_intersect_df_bothP <- as.data.frame(perSample_GOBP_enrich_signif_intersect_bothP) %>%
+  dplyr::mutate(overlaps = rowSums(.)) %>%
+  dplyr::mutate(NFATc1_mut_bothP_Only = ifelse(overlaps == 1 & NFATc1_mut_bothP == 1, TRUE, FALSE)) %>%
+  tibble::rownames_to_column(var="ID") %>%
+  dplyr::left_join(., perSample_GOBP_enrich_df_signif_collapse_bothP, by = "ID") %>%
+  dplyr::arrange(desc(NFATc1_mut_bothP_Only))
+
+perSample_GOBP_enrich_signif_intersect_df_NFATc1_mut <- perSample_GOBP_enrich_signif_intersect_df %>%
+  dplyr::filter(overlaps == 1 & NFATc1_mut == 1) %>%
+  dplyr::left_join(., perSample_GOBP_enrich_df_signif$NFATc1_mut, by = c("ID", "Description"))
+
+perSample_GOBP_enrich_signif_intersect_df_WT <- perSample_GOBP_enrich_signif_intersect_df %>%
+  dplyr::filter(overlaps == 1 & WT == 1) %>%
+  dplyr::left_join(., perSample_GOBP_enrich_df_signif$WT, by = c("ID", "Description"))
+
+# bothP
+perSample_GOBP_enrich_signif_intersect_df_NFATc1_mut_bothP <- perSample_GOBP_enrich_signif_intersect_df_bothP %>%
+  dplyr::filter(overlaps == 1 & NFATc1_mut_bothP == 1) #%>%
+  dplyr::left_join(., perSample_GOBP_enrich_df_signif_bothP$NFATc1_mut_bothP, by = c("ID", "Description"))
+
+perSample_GOBP_enrich_signif_intersect_df_WT_bothP <- perSample_GOBP_enrich_signif_intersect_df_bothP %>%
+  dplyr::filter(overlaps == 1 & WT == 1) %>%
+  dplyr::left_join(., perSample_GOBP_enrich_df_signif_bothP$WT, by = c("ID", "Description"))
+
+# perSample_GOBP_enrich_signif_intersect_df_C6 <- perSample_GOBP_enrich_signif_intersect_df %>%
+#   dplyr::filter(overlaps == 1 & C6 == 1) %>%
+#   dplyr::left_join(., perSample_GOBP_enrich_df_signif$C6, by = "ID")
+  
+
+# Plotting top 25 significant GOBP in WT
+# perSample_GOBP_enrich_signif_intersect_df_WT
+
+#perSample_GOBP_enrich_signif_intersect_df_WT_ntop <- as.data.frame(perSample_GOBP_enrich_list$WT) #%>%
+ntop_signif_gsea = 20
+padj_cutoff_ORA = 0.05
+perSample_GOBP_enrich_signif_intersect_df_WT_ntop <- perSample_GOBP_enrich_signif_intersect_df_WT %>%
+    dplyr::filter(p.adjust < padj_cutoff_ORA) %>%  # significantly enriched
+    dplyr::arrange(p.adjust) %>%
+    dplyr::slice_head(n = ntop_signif_gsea) %>%
+    tidyr::separate(., GeneRatio, sep="/", into = c("GeneRatio_num", "GeneRatio_denom")) %>%
+    dplyr::mutate(GeneRatio = as.numeric(GeneRatio_num)/as.numeric(GeneRatio_denom),
+                    log10_padj = -log10(p.adjust)) %>%
+  dplyr::mutate(Description = stringr::str_wrap(Description, width = 50)) # wrapping long text df$newx = str_wrap(df$x, width = 10)
+  
+#enrichplot::dotplot(perSample_GOBP_enrich_list$WT, showCategory=25) + ggtitle("dotplot for ORA")
+#renv::install("forcats")
+perSample_GOBP_enrich_signif_intersect_df_WT_ntop_plot <- ggplot(data = perSample_GOBP_enrich_signif_intersect_df_WT_ntop, 
+                                                                 mapping=aes(x = log10_padj, 
+                                                                             y = forcats::fct_reorder(Description, log10_padj),
+                                                                             color = GeneRatio,
+                                                                             size = Count)) +
+  geom_point() + 
+  theme_bw() +
+  scale_colour_gradient(low = "yellow", high = "red", na.value = NA) +
+  ggtitle(paste0("Top 20 significantly (p.adj < ", padj_cutoff_ORA,") enriched GOBP terms in WT unique peaks.")) +
+  xlab("-log10(padj)") +
+  theme(text = element_text(size=12),
+        plot.title = element_text(hjust = 0.5), 
+        axis.title.y =  element_blank(), 
+        axis.text.y = element_text(face = "bold")) 
+
+ggsave(perSample_GOBP_enrich_signif_intersect_df_WT_ntop_plot, filename = paste0(results_dir, "/perSample_GOBP_enrich_signif_WTonly_peaks_ntop20.png"), height = 20, width = 25, units = "cm")
+ggsave(perSample_GOBP_enrich_signif_intersect_df_WT_ntop_plot, filename = paste0(results_dir, "/perSample_GOBP_enrich_signif_WTonly_peaks_ntop20.pdf"), height = 20, width = 25, units = "cm")
+
+# adding overlaps to significant results and saving
+perSample_GOBP_enrich_df_signif_overlaps <- list(signifGO_overlaps = perSample_GOBP_enrich_signif_intersect_df,
+                                                 NFATc1_mut = perSample_GOBP_enrich_signif_intersect_df_NFATc1_mut,
+                                                 WT = perSample_GOBP_enrich_signif_intersect_df_WT)
+
+# bothP
+perSample_GOBP_enrich_df_signif_overlaps_bothP <- list(signifGO_overlaps = perSample_GOBP_enrich_signif_intersect_df_bothP,
+                                                 NFATc1_mut = perSample_GOBP_enrich_signif_intersect_df_NFATc1_mut_bothP,
+                                                 WT = perSample_GOBP_enrich_signif_intersect_df_WT_bothP)
+
+message("Saving perSample enrichment results")
+save(unique_genes_toEnrich, perSample_GOBP_enrich_list, perSample_GOBP_enrich_df_signif, perSample_GOBP_enrich_signif_intersect_df, file = paste0(results_dir, "/perSample_enrichment.RData"))
+
+save(unique_genes_toEnrich_bothP, perSample_GOBP_enrich_list_bothP, perSample_GOBP_enrich_df_signif_bothP, perSample_GOBP_enrich_signif_intersect_df_bothP, file = paste0(results_dir, "/perSample_enrichment_bothP.RData"))
+
+openxlsx::write.xlsx(x = perSample_GOBP_enrich_df, 
+                     file = paste0(results_dir, "/perSample_GOBP_enrich_all.xlsx"),
+                     asTable = TRUE,
+                     overwrite = TRUE) 
+
+openxlsx::write.xlsx(x = perSample_GOBP_enrich_df_signif_overlaps, 
+                     file = paste0(results_dir, "/perSample_GOBP_enrich_signif_overlaps.xlsx"),
+                     asTable = TRUE,
+                     overwrite = TRUE) 
+
+
+# bothP
+openxlsx::write.xlsx(x = perSample_GOBP_enrich_df_bothP, 
+                     file = paste0(results_dir, "/perSample_bothP_GOBP_enrich_all.xlsx"),
+                     asTable = TRUE,
+                     overwrite = TRUE) 
+
+openxlsx::write.xlsx(x = perSample_GOBP_enrich_df_signif_overlaps_bothP, 
+                     file = paste0(results_dir, "/perSample_bothP_GOBP_enrich_signif_overlaps.xlsx"),
+                     asTable = TRUE,
+                     overwrite = TRUE) 
+```
+
+```{r differential accesibility analysis prep, include=TRUE, eval=TRUE, cache=TRUE}
+# Defining a set of non-reduntant peaks present in at least 2 samples, count reads in those peaks and use for differential accessibility analysis
+
+n_occurences <- length(sample_names) -1 # peaks need to be present int 3 and more samples
+n_occurences_max <- length(sample_names) 
+# overlap?
+#TODO:
+# [ ] - different ways how to find consensus - document how it is done here?! - reduce and overlaps!
+
+if (!file.exists(paste0(results_dir, "/atacseq_metadata_counts.RData"))){
+  # Counting for differential ATACseq ----
+  nrToCount <- allPeaksSet_filt_nR_annot_gr # allPeaksSet_filt_nR
+  occurrences <- rowSums(as.data.frame(elementMetadata(nrToCount))[1:length(sample_names)])
+  
+  # in two and more samples!
+  length(nrToCount)
+  consensusToCount <- nrToCount[occurrences >= n_occurences, ]  
+  names(consensusToCount) <- consensusToCount$unique_geneID
+  length(consensusToCount)
+  
+  consensusToSizeFactors <- nrToCount[occurrences == n_occurences_max, ]  
+  names(consensusToSizeFactors) <- consensusToSizeFactors$unique_geneID
+  length(consensusToSizeFactors)
+  
+  # looking at annotated regions 
+  consensusToCount_PID1185 <- consensusToCount[consensusToCount$PID1185 == TRUE,]
+  consensusToCount_PID1180 <- consensusToCount[consensusToCount$PID1180 == TRUE,]
+  consensusToCount_ND_RJH <- consensusToCount[consensusToCount$ND_RJH == TRUE,]
+  consensusToCount_ND_MK <- consensusToCount[consensusToCount$ND_MK == TRUE,]
+
+  consensusToCount_test_grlist <- GenomicRanges::GRangesList(PID1185=consensusToCount_PID1185, 
+                                                             PID1180=consensusToCount_PID1180, 
+                                                             ND_RJH=consensusToCount_ND_RJH,
+                                                             ND_MK=consensusToCount_ND_MK)
+  consensus_test_annot <- lapply(consensusToCount_test_grlist, ChIPseeker::annotatePeak, 
+                                 TxDb=txdb,
+                                 tssRegion=c(-3000, 3000),
+                                 level = "gene",  
+                                 annoDb="org.Hs.eg.db", 
+                                 verbose=FALSE)
+  
+  consensus_test_annot_bar_plot <- ChIPseeker::plotAnnoBar(consensus_test_annot)
+  consensus_test_annot_distTSS_plot <- ChIPseeker::plotDistToTSS(consensus_test_annot,
+              title="Distribution of ATAC-seq peaks \nrelative to TSS")
+  ggsave(consensus_test_annot_bar_plot, filename = file.path(results_dir, "/consensus_annot_bar_plot.png"))
+  ggsave(consensus_test_annot_bar_plot, filename = file.path(results_dir, "/consensus_annot_bar_plot.pdf"))
+  
+  # counting reads ----
+  # to control memory we specify the number of reads to be held in memory at one time using the yield() parameter.
+  bamFL <- Rsamtools::BamFileList(project_metadata$bam_files_path, yieldSize = 5e+06)
+  
+  #TODO:
+  # [ ] - import:: Rsamtools functions below
+  counts_toSizeFactors <- GenomicAlignments::summarizeOverlaps(features = consensusToSizeFactors, 
+                                                               reads = bamFL, 
+                                                               singleEnd = TRUE,
+                                                               ignore.strand = TRUE,
+                                                               fragments = FALSE,
+                                                               param = Rsamtools::ScanBamParam(flag = Rsamtools::scanBamFlag(isDuplicate = FALSE)))
+  counts_consensus <- GenomicAlignments::summarizeOverlaps(features = consensusToCount, 
+                                                           reads = bamFL, 
+                                                           singleEnd = TRUE,
+                                                           ignore.strand = TRUE,
+                                                           fragments = FALSE,
+                                                           param = Rsamtools::ScanBamParam(flag = Rsamtools::scanBamFlag(isDuplicate = FALSE)))
+  
+  colnames(counts_toSizeFactors) <- sample_names
+  colnames(counts_consensus) <- sample_names
+  
+  
+  # exporting consensus counts ---
+  #AAA <- as.data.frame(rowData(counts_consensus))
+  #BBB <- as.data.frame(rowRanges(counts_consensus))
+  # identical(AAA, BBB) yes after seqnames, start, end, width and strand is removed
+  #AAA <- as.data.frame(counts_consensus@rowRanges)
+  
+  counts_consensus_ranges_df <- as.data.frame(rowRanges(counts_consensus)) %>%
+    dplyr::rename(PID1185_peak_detected = PID1185,
+                  PID1180_peak_detected = PID1180,
+                  ND_RJH_peak_detected = ND_RJH,
+                  ND_MK_peak_detected = ND_MK)
+  
+  # save this in a tsv - consensus_peaks_counts.tsv and generate md5sums!
+  counts_consensus_counts_df <- as.data.frame(assay(counts_consensus)) %>%  # dim 21627 3
+    tibble::rownames_to_column(var="unique_geneID") %>%
+    dplyr::rename(PID1185_counts = PID1185,
+                  PID1180_counts = PID1180,
+                  ND_RJH_counts = ND_RJH,
+                  ND_MK_counts = ND_MK) %>%
+    dplyr::left_join(., counts_consensus_ranges_df, by = "unique_geneID") %>%
+    # renaming samples:
+    # ND_01 ->	C5
+    # ND_02	-> C6
+    # Patient ->	P
+    # !!! Incorporate in the code above!
+    dplyr::rename(PID1185_counts = PID1185_counts,
+                  PID1180_counts = PID1180_counts,
+                  ND_RJH_counts = ND_RJH_counts,
+                  ND_MK_counts = ND_MK_counts,
+                  PID1185_peak_detected = PID1185_peak_detected,
+                  PID1180_peak_detected = PID1180_peak_detected,
+                  ND_RJH_peak_detected = ND_RJH_peak_detected,
+                  ND_MK_peak_detected= ND_MK_peak_detected) %>%
+    dplyr::select(unique_geneID, seqnames, start, end, width, strand, 
+                  PID1185_peak_detected, PID1180_peak_detected, ND_RJH_peak_detected, ND_MK_peak_detected,
+                  PID1185_counts, PID1180_counts, ND_RJH_counts, ND_MK_counts,
+                  dplyr::everything())
+
+  readr::write_tsv(x = counts_consensus_counts_df,
+                   file = file.path(results_dir, "atacseq_consensus_peaks_counts.tsv"))
+  
+  
+  #rowRanges(myCounts)
+  
+  #count_data <- assay(myCounts)
+  all(colnames(counts_toSizeFactors) == rownames(project_metadata))
+  all(colnames(counts_consensus) == rownames(project_metadata))
+  
+  message("Saving metadata and counts")
+  save(project_metadata, counts_consensus, counts_toSizeFactors, nrToCount, blacklist, file = paste0(results_dir, "/atacseq_metadata_counts.RData"))
+} else {
+  message("Loading metadata and counts")
+  load(file = paste0(results_dir, "/atacseq_metadata_counts.RData"))
+}
+
+
+```
+
+```{r differential accesibility analysis run, include=TRUE, eval=TRUE, cache=TRUE}
+
+# DESeq2 analysis ----
+#TODO:
+# [ ] - what are the control genes defined below?!
+
+if (!file.exists(paste0(results_dir, "/dds_objects.RData"))){
+  # pre-calculating size factors
+  project_metadata_upd <- project_metadata %>%
+    dplyr::mutate(genotype = factor(genotype, levels = c("WT", "NFATc1_mut")))
+  atacDDS_toSizeFactors <- DESeq2::DESeqDataSetFromMatrix(countData = assay(counts_toSizeFactors), 
+                                                          colData = project_metadata_upd, 
+                                                          design = ~genotype, 
+                                                          rowRanges = rowRanges(counts_toSizeFactors))  # rowRanges(myCounts) == 
+  
+  atacDDS_withoutControls <- DESeq2::DESeqDataSetFromMatrix(countData = assay(counts_consensus), 
+                                                            colData = project_metadata_upd, 
+                                                            design = ~genotype, 
+                                                            rowRanges = rowRanges(counts_consensus))  # rowRanges(myCounts) == consensusToCount
+  
+  atacDDS <- DESeq2::DESeqDataSetFromMatrix(countData = assay(counts_consensus), 
+                                            colData = project_metadata_upd, 
+                                            design = ~genotype, 
+                                            rowRanges = rowRanges(counts_consensus))  # rowRanges(myCounts) == consensusToCount
+  
+  atacDDS_toSizeFactors <- DESeq2::estimateSizeFactors(atacDDS_toSizeFactors)
+  atacDDS_withoutControls <- DESeq2::estimateSizeFactors(atacDDS_withoutControls)
+  
+  atacDDS_toSizeFactors_sf <- DESeq2::sizeFactors(atacDDS_toSizeFactors)
+  atacDDS_withoutControls_sf <- DESeq2::sizeFactors(atacDDS_withoutControls)
+  
+  # frozen geomMeans? (but would need all of the gens)
+  # rather use controlGenes
+  control_genes <- rownames(atacDDS_withoutControls) %in% rownames(atacDDS_toSizeFactors)
+  table(control_genes)
+  atacDDS <- DESeq2::estimateSizeFactors(atacDDS, controlGenes = control_genes)
+  atacDDS_sf <- DESeq2::sizeFactors(atacDDS)
+  
+  # comparing size factors
+  sf_comparison_list <- list(controls_sf = atacDDS_toSizeFactors_sf,
+                             consensus_noControls = atacDDS_withoutControls_sf,
+                             consensus_controlsCorrected = atacDDS_sf)
+  sf_comparison <- dplyr::bind_rows(sf_comparison_list, .id="sf_origin")
+  
+  # different length :D
+  # geoMeans <- exp(rowMeans(log(counts(atacDDS_toSizeFactors))))
+  # dds_test <- estimateSizeFactors(atacDDS,geoMeans=geoMeans)
+  # sizeFactors(dds)
+  
+  # plot before and after normalization and differences in using all overlapping size factors?!
+  atacDDS_withoutControls_rawCounts <- DESeq2::counts(object = atacDDS_withoutControls, normalized = FALSE)
+  atacDDS_withoutControls_normCounts <- DESeq2::counts(object = atacDDS_withoutControls, normalized = TRUE)
+  atacDDS_rawCounts <- DESeq2::counts(object = atacDDS, normalized = FALSE)
+  atacDDS_normCounts <- DESeq2::counts(object = atacDDS, normalized = TRUE)
+  
+  atacDDS_withoutControls_rawCounts_df <- as.data.frame(atacDDS_withoutControls_rawCounts) %>%
+    tibble::rownames_to_column(var = "unique_geneID") %>%
+    tidyr::pivot_longer(., -unique_geneID, names_to = "sample_name", values_to = "counts") %>%
+    dplyr::mutate(count_type = "raw_counts",
+                  sf_origin = "consensus_noControls")
+  
+  atacDDS_withoutControls_normCounts_df <- as.data.frame(atacDDS_withoutControls_normCounts) %>%
+    tibble::rownames_to_column(var = "unique_geneID") %>%
+    tidyr::pivot_longer(., -unique_geneID, names_to = "sample_name", values_to = "counts") %>%
+    dplyr::mutate(count_type = "norm_counts",
+                  sf_origin = "consensus_noControls")
+  
+  atacDDS_rawCounts_df <- as.data.frame(atacDDS_rawCounts) %>%
+    tibble::rownames_to_column(var = "unique_geneID") %>%
+    tidyr::pivot_longer(., -unique_geneID, names_to = "sample_name", values_to = "counts") %>%
+    dplyr::mutate(count_type = "raw_counts",
+                  sf_origin = "consensus_controlsCorrected")
+  
+  atacDDS_normCounts_df <- as.data.frame(atacDDS_normCounts) %>%
+    tibble::rownames_to_column(var = "unique_geneID") %>%
+    tidyr::pivot_longer(., -unique_geneID, names_to = "sample_name", values_to = "counts") %>%
+    dplyr::mutate(count_type = "norm_counts",
+                  sf_origin = "consensus_controlsCorrected")
+  
+  sf_comparison_counts_df <- dplyr::bind_rows(atacDDS_withoutControls_rawCounts_df,
+                                              atacDDS_withoutControls_normCounts_df,
+                                              atacDDS_rawCounts_df,
+                                              atacDDS_normCounts_df) %>%
+    dplyr::mutate(count_type = factor(count_type, levels = c("raw_counts", "norm_counts")),
+                  sf_origin = factor(sf_origin, levels = c("consensus_noControls", "consensus_controlsCorrected")))
+  
+  sf_comparison_counts_box_plot <- ggplot(data = sf_comparison_counts_df, aes(x=count_type, y=log2(counts + 1), fill=sample_name)) + 
+    geom_boxplot() + 
+    facet_wrap(~sf_origin) +
+    theme_bw()
+  
+  sf_comparison_counts_dens_plot <- ggplot(data = sf_comparison_counts_df, aes(x=log2(counts + 1), fill=sample_name)) + 
+    geom_density(alpha = 0.6) + 
+    facet_wrap(~count_type + sf_origin) +
+    theme_bw()
+  
+  ggsave(sf_comparison_counts_box_plot, filename = file.path(results_dir, "/sf_comparison_counts_box_plot.png"))
+  ggsave(sf_comparison_counts_dens_plot, filename = file.path(results_dir, "/sf_comparison_counts_dens_plot.png"))
+  
+  # betaPrior=FALSE is now by default and should be followed by lfcShrink
+  # however, setting here betaPrior=T; also consistent with similar setting as Florian: dds <- DESeq(dds, test="Wald", fitType="local", betaPrior=T)
+  
+  # further compare
+  #atacDDS <- DESeq2::DESeq(atacDDS, test="Wald", fitType="local", betaPrior=T)
+  
+  # here they also run withut betaPrior? check version!
+  # https://github.com/Zhang-lab/ATACseq_benchmarking/blob/master/simulated_ATAC_tests_DESeq2.R
+  # https://support.bioconductor.org/p/95436/
+  # https://support.bioconductor.org/p/68772/
+  # https://bioinformatics.stackexchange.com/questions/10837/loss-and-gain-of-region-in-atac-seq
+  #https://support.bioconductor.org/p/103348/
+  # also setting betaPrior=TRUE since no shrinking is done aferwards; https://support.bioconductor.org/p/118257/
+  # make sure it uses pre-existing size factors!
+  atacDDS_withoutControls <- DESeq2::DESeq(atacDDS_withoutControls, test="Wald", fitType="local", betaPrior=TRUE)
+  atacDDS <- DESeq2::DESeq(atacDDS, test="Wald", fitType="local", betaPrior=TRUE)  # set local as in Diffbind; see manual and 
+  
+  # what dispersion is expected for ATAC-seq?]
+  # par(mfrow=c(1,2)) 
+  # DESeq2::plotDispEsts(atacDDS_withoutControls)
+  # DESeq2::plotDispEsts(atacDDS)
+  # dev.off()
+  
+  # error in fit for rlog! if fitType="local" not specified 
+  # -- note: fitType='parametric', but the dispersion trend was not well captured by the
+  #  function: y = a/x + b, and a local regression fit was automatically substituted.
+  #  specify fitType='local' or 'mean' to avoid this message next time.
+  atac_rlog <- DESeq2::rlog(atacDDS, fitType="local")
+  atac_rlog_ranges <- rowRanges(atac_rlog)
+  atac_rlog_counts <- assay(atac_rlog)  # use for heatmaps
+  atac_pca <- DESeq2::plotPCA(atac_rlog, intgroup = "genotype", ntop = nrow(atac_rlog)) + theme_bw()
+  
+  message("Saving dds objects")
+  save(atacDDS, atacDDS_withoutControls, atacDDS_toSizeFactors, file = paste0(results_dir, "/dds_objects.RData"))
+} else {
+  
+  message("Loading dds objects")
+  load(file = paste0(results_dir, "/dds_objects.RData"))
+  
+  atac_rlog <- DESeq2::rlog(atacDDS, fitType="local")
+  atac_rlog_ranges <- rowRanges(atac_rlog)
+  atac_rlog_counts <- assay(atac_rlog)
+}
+
+
+# With the new DESeq2 object we can now test for any differences in ATACseq signal between groups.
+
+#DESeq2::resultsNames(atacDDS)
+
+# extracting differential accessibility results ----
+# contrasts
+# patient_vs_NDs c("sample_group", "Patient", "ND")
+#project_metadata_upd
+# DESeq2::resultsNames(atacDDS)
+de_comparisons <- list(NFATc1_mut_vs_WT = c("genotype", "NFATc1_mut", "WT"))
+
+de_results <- purrr::map(.x = names(de_comparisons), .f = function(comparison_name){
+  # extract DE results
+  #   run annotation
+  # extract significant - UP, DOWN
+  #   run annotation
+  #   run GO enrichment
+  
+  message(paste0("Processing comparison: ", comparison_name))
+  
+  # extract DE results
+  #   run annotation
+  temp_contrast <- de_comparisons[[comparison_name]]
+  de_results_gr <- DESeq2::results(atacDDS, contrast = temp_contrast, format = "GRanges")
+  de_results_gr <- de_results_gr[order(de_results_gr$pvalue)]  # order based on p-value
+  
+  return(list(de_results_gr = de_results_gr))
+  
+}) %>% setNames(names(de_comparisons))
+
+
+# NFATc1_mut_vs_WT ----
+# annotating DESeq2 results
+# selecting significant results
+
+NFATc1_mut_vs_WT_results_dir <- file.path(results_dir, "NFATc1_mut_vs_WT_results")
+dir.create(NFATc1_mut_vs_WT_results_dir, showWarnings = TRUE)
+NFATc1_mut_vs_WT_results_motif_dir <- file.path(NFATc1_mut_vs_WT_results_dir, "motif_analysis")
+dir.create(NFATc1_mut_vs_WT_results_motif_dir, showWarnings = TRUE)
+
+# all peaks, not just consensus; but not using normalized counts
+NFATc1_mut_vs_WT_results_motif_allPeaks_dir <- file.path(NFATc1_mut_vs_WT_results_dir, "motif_analysis_allPeaks")
+dir.create(NFATc1_mut_vs_WT_results_motif_allPeaks_dir, showWarnings = TRUE)
+
+# annotating DESeq2 results ----
+de_results_gr <- de_results$NFATc1_mut_vs_WT$de_results_gr
+de_results_df <- as.data.frame(de_results_gr) %>%
+  tibble::rownames_to_column(var="unique_geneID") %>%
+  #dplyr::mutate(geneId = stringr::str_split_fixed(unique_geneID, pattern = "_", 4)[,1]) %>%
+  dplyr::left_join(., dplyr::select(allPeaksSet_filt_nR_annot_df, -seqnames, -start, -end, -width, -strand), by = "unique_geneID")  # annotating
+
+#TODO:
+# [ ] - save intermediate results!!!!
+
+# selecting signaficance results ----
+
+# padj significance
+hist(de_results_df$pvalue)
+hist(de_results_df$padj)
+#FIXME:
+# [ ] - using pvalue rather padj!!!!
+# de_results_df_filt_signifPadj <- de_results_df %>%
+#   dplyr::filter(!is.na(padj) & padj < padj_cutoff)
+# de_results_df_filt_signifPadj <- de_results_df %>%
+#   dplyr::filter(!is.na(padj) & pvalue < padj_cutoff)
+# de_results_df_filt_signifPval <- de_results_df %>%
+#   dplyr::filter(!is.na(padj) & pvalue < padj_cutoff)
+# quantile(de_results_df_filt_signifPadj$log2FoldChange)  # these are all down!
+  
+# de_results_df_filt_signifPadj_UP_DOWN <- de_results_df_filt_signifPval %>%
+#   dplyr::mutate(FC_direction = ifelse(log2FoldChange < 0, "DOWN", "UP"))
+# table(de_results_df_filt_signifPadj_UP_DOWN$FC_direction)
+
+de_results_df_filt_signifLog2Promoters_df <- de_results_df %>%
+  dplyr::filter((abs(log2FoldChange) > log2FC_cutoff) & (abs(distanceToTSS) <= promoter_dist))
+
+de_results_df_filt_signifLog2Promoters_df_UP_DOWN <- de_results_df_filt_signifLog2Promoters_df %>%
+  dplyr::mutate(FC_direction = ifelse(log2FoldChange < 0, "DOWN", "UP"))
+table(de_results_df_filt_signifLog2Promoters_df_UP_DOWN$FC_direction)
+
+# renaming duplicates
+de_results_df_filt_signifLog2Promoters_df_dupl <- de_results_df_filt_signifLog2Promoters_df[duplicated(de_results_df_filt_signifLog2Promoters_df$SYMBOL) | duplicated(de_results_df_filt_signifLog2Promoters_df$SYMBOL, fromLast=TRUE),]
+
+de_results_df_filt_signifLog2Promoters_df_duplFix <- de_results_df_filt_signifLog2Promoters_df %>%
+  dplyr::mutate(SYMBOL = ifelse(SYMBOL %in% de_results_df_filt_signifLog2Promoters_df_dupl$SYMBOL, paste(SYMBOL, seqnames, start, end, sep = "_"), SYMBOL))
+
+# for heatmap ----
+# mostly down
+# de_results_df_filt_signifPadj_forHeatmap <- de_results_df_filt_signifPadj %>%
+#   dplyr::select(unique_geneID, SYMBOL)
+# check for duplicates in gene symbols
+#sum(duplicated(de_results_df_filt_signifPadj_forHeatmap$SYMBOL))
+  
+# atac_rlog_counts_forHeatmap_signifPadj <- as.data.frame(atac_rlog_counts) %>%
+#   tibble::rownames_to_column(var="unique_geneID") %>%
+#   dplyr::right_join(., de_results_df_filt_signifPadj_forHeatmap, by = "unique_geneID") %>%
+#   dplyr::select(-unique_geneID) %>%
+#   tibble::column_to_rownames("SYMBOL")
+#   
+annotCol_forHeatmap <- project_metadata %>%
+  dplyr::select(sample_name, condition) %>%
+  tibble::column_to_rownames(var="sample_name")
+
+annotRow_forHeatmap <- de_results_df_filt_signifPadj %>%
+  dplyr::select(SYMBOL, annotation) %>%
+  dplyr::mutate(annotation = gsub(pattern = "(Exon|Intron)( \\(.+)", replacement = "\\1", annotation)) %>%
+  tibble::column_to_rownames(var="SYMBOL")
+
+pheatmap::pheatmap(atac_rlog_counts_forHeatmap_signifPadj, 
+                   scale = "row", 
+                   cluster_cols = FALSE,
+                   annotation_col = annotCol_forHeatmap,
+                   annotation_row = annotRow_forHeatmap)
+
+pheatmap::pheatmap(atac_rlog_counts_forHeatmap_signifPadj, 
+                   scale = "row", 
+                   cluster_cols = FALSE,
+                   annotation_col = annotCol_forHeatmap,
+                   annotation_row = annotRow_forHeatmap,
+                  filename = file.path(NFATc1_mut_vs_WT_results_dir, "de_results_heatmap_signifPadj.pdf"))
+
+pheatmap::pheatmap(atac_rlog_counts_forHeatmap_signifPadj, 
+                   scale = "row", 
+                   cluster_cols = FALSE,
+                   annotation_col = annotCol_forHeatmap,
+                   annotation_row = annotRow_forHeatmap,
+                  filename = file.path(NFATc1_mut_vs_WT_results_dir, "de_results_heatmap_signifPadj.png"))
+
+# for logFC significance
+de_results_df_filt_signifLog2Promoters_forHeatmap <- de_results_df_filt_signifLog2Promoters_df_duplFix %>%
+  dplyr::select(unique_geneID, SYMBOL)
+# check for duplicates in gene symbols
+sum(duplicated(de_results_df_filt_signifLog2Promoters_forHeatmap$SYMBOL))
+
+# re-run with blind=FALSE
+atac_rlog <- DESeq2::rlog(atacDDS, fitType="local", blind=FALSE)
+atac_rlog_ranges <- rowRanges(atac_rlog)
+atac_rlog_counts <- assay(atac_rlog)
+  
+atac_rlog_counts_forHeatmap_signifLog2Promoters <- as.data.frame(atac_rlog_counts) %>%
+  tibble::rownames_to_column(var="unique_geneID") %>%
+  dplyr::right_join(., de_results_df_filt_signifLog2Promoters_forHeatmap, by = "unique_geneID") %>%
+  dplyr::select(-unique_geneID) %>%
+  tibble::column_to_rownames("SYMBOL")
+  
+  
+annotCol_forHeatmap <- project_metadata_upd %>%
+  dplyr::select(sample_name, genotype) %>%
+  tibble::column_to_rownames(var="sample_name")
+
+annotRow_forHeatmap <- de_results_df_filt_signifLog2Promoters_df_duplFix %>%
+  dplyr::select(SYMBOL, annotation) %>%
+  dplyr::mutate(annotation = gsub(pattern = "(Exon|Intron)( \\(.+)", replacement = "\\1", annotation)) %>%
+  tibble::column_to_rownames(var="SYMBOL")
+
+atac_rlog_counts_forHeatmap_signifLog2Promoters_reord <- atac_rlog_counts_forHeatmap_signifLog2Promoters[c("ND_RJH","ND_MK", "PID1185", "PID1180")]
+pheatmap::pheatmap(atac_rlog_counts_forHeatmap_signifLog2Promoters_reord, 
+                   scale = "row", 
+                   cluster_cols = FALSE,
+                   annotation_col = annotCol_forHeatmap,
+                   annotation_row = annotRow_forHeatmap,
+                   fontsize_row = 10)  # fontsize_row = 10
+
+pheatmap::pheatmap(atac_rlog_counts_forHeatmap_signifLog2Promoters_reord, 
+                   scale = "row", 
+                   cluster_cols = FALSE,
+                   annotation_col = annotCol_forHeatmap,
+                   annotation_row = annotRow_forHeatmap,
+                   fontsize_row = 10,
+                   filename = file.path(NFATc1_mut_vs_WT_results_dir, "de_results_heatmap_signifLog2Promoters.pdf"))
+
+pheatmap::pheatmap(atac_rlog_counts_forHeatmap_signifLog2Promoters_reord, 
+                   scale = "row", 
+                   cluster_cols = FALSE,
+                   annotation_col = annotCol_forHeatmap,
+                   annotation_row = annotRow_forHeatmap,
+                   fontsize_row = 10,
+                  filename = file.path(NFATc1_mut_vs_WT_results_dir, "de_results_heatmap_signifLog2Promoters.png"))
+
+# pub quality heatmap ----
+# for the downregulated: HDAC7, NT5E, IL7R, CCR2, LDOC1, CRTAM, IL2, ITGAX, TESPA1, TRAF2IP2, STAT5A, TCF7, IFNG, IKZF2, CD44, CAP70, RANGAP1, LY9, NFAT5, CDK6, CD7 and VAV1
+# for the upregulated: FOXO6, KLF16, SUB1, IL7, TGFB1, HEXD, NELFCD, CSNK1G2, MAP2K7, PPP1R15A and TCF25
+# highlight_genes <- c("HDAC7", "NT5E", "IL7R", "CCR2", "LDOC1", "CRTAM", "IL2", "ITGAX", "TESPA1", "TRAF3IP2", "STAT5A", "TCF7", "IFNG", "IKZF2", "CD44", "ZAP70", "RANGAP1", "LY9", "NFAT5", "CDK6", "CD7", "VAV1", "FOXO6", "KLF16", "SUB1", "IL7", "TGFB1", "HEXD", "NELFCD", "CSNK1G2", "MAP2K7", "PPP1R15A", "TCF25")
+# length(highlight_genes) 33 genes!
+
+annotCol_forHeatmap <- project_metadata %>%
+  dplyr::select(sample_name, condition) %>%
+  dplyr::rename(genotype = condition) %>%
+  dplyr::mutate(genotype = if_else(genotype == "IKZF2-WT", "WT", "I325V-Hom")) %>%
+  dplyr::mutate(bio_rep = sample_name) %>%
+  tibble::column_to_rownames(var="sample_name")
+
+# annotRow_forHeatmap <- de_results_df_filt_signifPadj %>%
+#   dplyr::select(SYMBOL, annotation) %>%
+#   dplyr::mutate(annotation = gsub(pattern = "(Exon|Intron)( \\(.+)", replacement = "\\1", annotation)) %>%
+#   tibble::column_to_rownames(var="SYMBOL")
+
+#scales::show_col(c("#d9d9d9", "#969696", "#fd8d3c"))
+
+annotCol_forHeatmap_colors <- list(genotype = c(  WT="#525252", `I325V-Hom` = "#fc4e2a"),
+                                   bio_rep = c(C5 = "#d9d9d9", C6= "#969696", P = "#fd8d3c"))
+
+# - [] large gap between legend and heatmap - due to long gene names!
+# remove row labels during plotting
+row_labels <- rownames(atac_rlog_counts_forHeatmap_signifLog2Promoters)
+#nchar(row_labels)
+row_labels <- ifelse(row_labels %in% highlight_genes, row_labels, stringr::str_pad("", width = 25, side = "both")) # 14 spaces - small hack to keep gaps after repel
+#nchar(row_labels)
+# small hack to add spacing between legend and heatmap after 
+
+signifLog2Promoters_heatmap <-  pheatmap::pheatmap(as.matrix(atac_rlog_counts_forHeatmap_signifLog2Promoters),
+                                                   color = colorRampPalette(rev(RColorBrewer::brewer.pal(7, "PiYG")))(100),
+                                                   scale = "row",
+                                                   #gaps_col = ph_col_annot%>% arrange(state)%$% table(state) %>% cumsum,
+                                                   #gaps_row = ph_genes$clust %>% table() %>% cumsum,
+                                                   cluster_cols = FALSE,
+                                                   cluster_rows = TRUE,
+                                                   show_colnames = FALSE,
+                                                   show_rownames = TRUE,
+                                                   annotation_col = annotCol_forHeatmap,
+                                                   #annotation_row = ph_row_annot,
+                                                   #annotation_legend = FALSE,
+                                                   annotation_colors = annotCol_forHeatmap_colors,  # add manual annotation corresponding to samples
+                                                   labels_row = row_labels,
+                                                   fontsize_row = 9,
+                                                   fontsize = 9,
+                                                   #cellheight = 9,
+                                                   main = "Significantly differentially accessible regions")
+
+signifLog2Promoters_heatmap_upd <- add_flag(signifLog2Promoters_heatmap,
+                                            kept.labels = highlight_genes,
+                                            repel.degree = 0.2,
+                                            hiden.labels.character = "") # 14 spaces? - small hack to keep gaps after repel
+  
+pdf(file.path(NFATc1_mut_vs_WT_results_dir, "dar_signifLog2Promoters_heatmap.pdf"))
+grid.draw(signifLog2Promoters_heatmap_upd)
+dev.off()
+  
+# also add filtering criteria!
+message("Saving DE results")
+
+load(file.path(NFATc1_mut_vs_WT_results_dir, "de_results_all.RData"))
+
+# de_filters <- data.frame(de_results_signifPadj = paste0("!is.na(padj) & padj < ", padj_cutoff),
+#                          de_results_signifLog2Promoters = paste0("(abs(log2FoldChange) > ", log2FC_cutoff,") & (abs(distanceToTSS) <= ", promoter_dist,"); distanceToTSS - window of ", promoter_dist," around TSS"))
+
+# de_results_df_toSave <- list(de_results = de_results_df,
+#                              de_results_signifPadj = de_results_df_filt_signifPadj,
+#                              de_results_signifLog2Promoters = de_results_df_filt_signifLog2Promoters_df,
+#                              applied_filters = de_filters)
+
+de_filters <- data.frame(de_results_signifLog2Promoters = paste0("(abs(log2FoldChange) > ", log2FC_cutoff,") & (abs(distanceToTSS) <= ", promoter_dist,"); distanceToTSS - window of ", promoter_dist," around TSS"))
+
+de_results_df_toSave <- list(de_results = de_results_df,
+                             de_results_signifLog2Promoters = de_results_df_filt_signifLog2Promoters_df,
+                             applied_filters = de_filters)
+openxlsx::write.xlsx(x = de_results_df_toSave, 
+                     file = paste0(NFATc1_mut_vs_WT_results_dir, "/da_results_NFATc1_mut_vs_WT_results.xlsx"),
+                     asTable = TRUE,
+                     overwrite = TRUE) 
+
+#   run annotation
+# extract significant - UP, DOWN
+#   run annotation
+#   run GO enrichment
+# significant based on log2FC
+
+enrich_GOterms <- c(GOBP="BP", GOMF="MF", GOCC="CC")
+
+# de_results_df_filt_signifPadj_UP <- de_results_df_filt_signifPadj %>%
+#   dplyr::filter(log2FoldChange > 0)
+# de_results_df_filt_signifPadj_DOWN <- de_results_df_filt_signifPadj %>%
+#   dplyr::filter(log2FoldChange < 0)
+#   
+# message("de_results_signif_annot_df all: ", nrow(de_results_df_filt_signifPadj))  
+# message("de_results_signif_annot_df_UP genes: ", nrow(de_results_df_filt_signifPadj_UP))
+# message("de_results_signif_annot_df_DOWN genes: ", nrow(de_results_df_filt_signifPadj_DOWN))
+# 
+# signifPadj_genesToEnrich <- list(all=unique(de_results_df_filt_signifPadj$geneId),
+#                                           up=unique(de_results_df_filt_signifPadj_UP$geneId),
+#                                           down=unique(de_results_df_filt_signifPadj_DOWN$geneId))
+# 
+# 
+# if (!file.exists(file.path(NFATc1_mut_vs_WT_results_dir, "de_results_goEnrich.RData"))) {
+#   
+#   signifPadj_goEnrichment <- purrr::map(.x = names(signifPadj_genesToEnrich), .f = function(gene_set){
+#     message("Enriching genes ", gene_set)
+#     
+#     goEnrichment <- purrr::map(.x = names(enrich_GOterms), .f = function(GO_name){
+#       message("Enriching for ", GO_name)
+#       
+#       clusterProfiler::enrichGO(gene = signifPadj_genesToEnrich[[gene_set]],
+#                                 universe      = gene_universe,
+#                                 OrgDb         = org.Hs.eg.db,
+#                                 ont           = enrich_GOterms[[GO_name]],  # MF, CC, BP, ALL
+#                                 pAdjustMethod = "BH", 
+#                                 pvalueCutoff  = 1,
+#                                 qvalueCutoff  = 1,
+#                                 readable      = TRUE)
+#       
+#     }) %>% setNames(names(enrich_GOterms))
+#     
+#     return(goEnrichment)
+#     
+#   }) %>% setNames(names(signifPadj_genesToEnrich))
+#   
+#   
+#   signifPadj_ALL_goEnrichment_df <- purrr::map(.x = signifPadj_goEnrichment$all, .f = as.data.frame) %>% setNames(names(signifPadj_goEnrichment$all))
+#   signifPadj_UP_goEnrichment_df <- purrr::map(.x = signifPadj_goEnrichment$up, .f = as.data.frame) %>% setNames(names(signifPadj_goEnrichment$up))
+#   signifPadj_DOWN_goEnrichment_df <- purrr::map(.x = signifPadj_goEnrichment$down, .f = as.data.frame) %>% setNames(names(signifPadj_goEnrichment$down))
+#   
+#   openxlsx::write.xlsx(x = signifPadj_ALL_goEnrichment_df, 
+#                        file = paste0(NFATc1_mut_vs_WT_results_dir, "/de_results_patient_vs_NDs_signifPadj_ALL_GOenrich.xlsx"),
+#                        asTable = TRUE,
+#                        overwrite = TRUE) 
+#   
+#   openxlsx::write.xlsx(x = signifPadj_DOWN_goEnrichment_df, 
+#                        file = paste0(NFATc1_mut_vs_WT_results_dir, "/de_results_patient_vs_NDs_signifPadj_DOWN_GOenrich.xlsx"),
+#                        asTable = TRUE,
+#                        overwrite = TRUE) 
+  
+  # on log2FC ----
+  de_results_df_filt_signifLog2Promoters_UP <- de_results_df_filt_signifLog2Promoters_df %>%
+    dplyr::filter(log2FoldChange > 0)
+  de_results_df_filt_signifLog2Promoters_DOWN <- de_results_df_filt_signifLog2Promoters_df %>%
+    dplyr::filter(log2FoldChange < 0)
+  
+  message("de_results_signif_annot_df all: ", nrow(de_results_df_filt_signifLog2Promoters_df))  
+  message("de_results_signif_annot_df_UP genes: ", nrow(de_results_df_filt_signifLog2Promoters_UP))
+  message("de_results_signif_annot_df_DOWN genes: ", nrow(de_results_df_filt_signifLog2Promoters_DOWN))
+  
+  signifLog2Promoters_genesToEnrich <- list(all=unique(de_results_df_filt_signifLog2Promoters_df$geneId),
+                                            up=unique(de_results_df_filt_signifLog2Promoters_UP$geneId),
+                                            down=unique(de_results_df_filt_signifLog2Promoters_DOWN$geneId))
+  
+  signifLog2Promoters_goEnrichment <- purrr::map(.x = names(signifLog2Promoters_genesToEnrich), .f = function(gene_set){
+    message("Enriching genes ", gene_set)
+    
+    goEnrichment <- purrr::map(.x = names(enrich_GOterms), .f = function(GO_name){
+      message("Enriching for ", GO_name)
+      
+      clusterProfiler::enrichGO(gene = signifLog2Promoters_genesToEnrich[[gene_set]],
+                                universe      = gene_universe,
+                                OrgDb         = org.Hs.eg.db,
+                                ont           = enrich_GOterms[[GO_name]],  # MF, CC, BP, ALL
+                                pAdjustMethod = "BH", 
+                                pvalueCutoff  = 1,
+                                qvalueCutoff  = 1,
+                                readable      = TRUE)
+      
+    }) %>% setNames(names(enrich_GOterms))
+    
+    return(goEnrichment)
+    
+  }) %>% setNames(names(signifLog2Promoters_genesToEnrich))
+  
+  
+  # also add filtering criteria!
+  message("Saving GOBP enrichment results")
+  
+  # save(signifPadj_goEnrichment, signifLog2Promoters_goEnrichment,
+  #      file = file.path(NFATc1_mut_vs_WT_results_dir, "de_results_goEnrich.RData"))
+  save(signifLog2Promoters_goEnrichment,
+       file = file.path(NFATc1_mut_vs_WT_results_dir, "da_results_goEnrich.RData"))
+  
+} else {
+  message("Loading GOBP enrichment results")
+  load(file = file.path(NFATc1_mut_vs_WT_results_dir, "de_results_goEnrich.RData"))
+  
+}
+
+signifLog2Promoters_ALL_goEnrichment_df <- purrr::map(.x = signifLog2Promoters_goEnrichment$all, .f = as.data.frame) %>% setNames(names(signifLog2Promoters_goEnrichment$all))
+
+signifLog2Promoters_UP_goEnrichment_df <- purrr::map(.x = signifLog2Promoters_goEnrichment$up, .f = as.data.frame) %>% setNames(names(signifLog2Promoters_goEnrichment$up))
+
+signifLog2Promoters_DOWN_goEnrichment_df <- purrr::map(.x = signifLog2Promoters_goEnrichment$down, .f = as.data.frame) %>% setNames(names(signifLog2Promoters_goEnrichment$down))
+
+lapply(signifLog2Promoters_ALL_goEnrichment_df, length)
+lapply(signifLog2Promoters_UP_goEnrichment_df, length)
+lapply(signifLog2Promoters_DOWN_goEnrichment_df, length)
+
+openxlsx::write.xlsx(x = signifLog2Promoters_ALL_goEnrichment_df, 
+                     file = paste0(NFATc1_mut_vs_WT_results_dir, "/da_results_NFATc1_mut_vs_WT_signifLog2Promoters_ALL_GOenrich.xlsx"),
+                     asTable = TRUE,
+                     overwrite = TRUE) 
+
+openxlsx::write.xlsx(x = signifLog2Promoters_UP_goEnrichment_df, 
+                     file = paste0(NFATc1_mut_vs_WT_results_dir, "/da_results_NFATc1_mut_vs_WT_signifLog2Promoters_UP_GOenrich.xlsx"),
+                     asTable = TRUE,
+                     overwrite = TRUE) 
+
+openxlsx::write.xlsx(x = signifLog2Promoters_DOWN_goEnrichment_df, 
+                     file = paste0(NFATc1_mut_vs_WT_results_dir, "/da_results_NFATc1_mut_vs_WT_signifLog2Promoters_DOWN_GOenrich.xlsx"),
+                     asTable = TRUE,
+                     overwrite = TRUE) 
+
+# accessibility heatmap ----
+# - [ ] add results from enricheR - they differ a bit; z-scores?
+
+# plotting GO term enrichment
+# top 25 and top50
+signifLog2Promoters_DOWN_goEnrichment_df <- purrr::map(.x = signifLog2Promoters_goEnrichment$down, .f = as.data.frame) %>% setNames(names(signifLog2Promoters_goEnrichment$down))
+
+signifLog2Promoters_DOWN_goEnrichment_GOBP <- signifLog2Promoters_DOWN_goEnrichment_df$GOBP
+
+# collapse go terms?
+
+ntop_GOTERMS=50
+signifLog2Promoters_DOWN_goEnrichment_GOBP_toPlot <- signifLog2Promoters_DOWN_goEnrichment_GOBP %>%
+  dplyr::filter(p.adjust < 0.05) %>%
+  dplyr::mutate(log10padj = -log(p.adjust, base = 10)) %>%
+  dplyr::arrange(desc(log10padj)) 
+
+signifLog2Promoters_DOWN_goEnrichment_GOBP_toPlot$Description <- factor(signifLog2Promoters_DOWN_goEnrichment_GOBP_toPlot$Description, levels = signifLog2Promoters_DOWN_goEnrichment_GOBP_toPlot$Description)
+
+# https://ggplot2.tidyverse.org/reference/geom_bar.html
+signifLog2Promoters_DOWN_GOBP_barplot <- ggplot(signifLog2Promoters_DOWN_goEnrichment_GOBP_toPlot[1:ntop_GOTERMS,], aes(x=log10padj, y=fct_rev(Description), fill = log10padj)) + 
+  scale_y_discrete(labels = scales::wrap_format(60)) +
+  geom_col() +
+  theme_bw() +
+  xlab("-log10(padj)") + ylab("") +
+  labs(fill = "-log10(padj)") + 
+  scale_fill_gradient2(low="navy", mid="white", high="red", 
+                       midpoint=0)
+
+ggsave(signifLog2Promoters_DOWN_GOBP_barplot, filename = paste0(NFATc1_mut_vs_WT_results_dir, "/signifLog2Promoters_DOWN_GOBP_barplot_ntop",ntop_GOTERMS,".pdf"))
+ggsave(signifLog2Promoters_DOWN_GOBP_barplot, filename = paste0(NFATc1_mut_vs_WT_results_dir, "/signifLog2Promoters_DOWN_GOBP_barplot_ntop",ntop_GOTERMS,".png"))
+
+# only top25
+ntop_GOTERMS=25
+
+# https://ggplot2.tidyverse.org/reference/geom_bar.html
+signifLog2Promoters_DOWN_GOBP_barplot <- ggplot(signifLog2Promoters_DOWN_goEnrichment_GOBP_toPlot[1:ntop_GOTERMS,], aes(x=log10padj, y=fct_rev(Description), fill = log10padj)) + 
+  scale_y_discrete(labels = scales::wrap_format(60)) +
+  geom_col() +
+  theme_bw() +
+  xlab("-log10(padj)") + ylab("") +
+  labs(fill = "-log10(padj)") + 
+  scale_fill_gradient2(low="navy", mid="white", high="red", 
+                       midpoint=0)
+
+# width = 10, height = 20, units = "cm"
+ggsave(signifLog2Promoters_DOWN_GOBP_barplot, filename = paste0(NFATc1_mut_vs_WT_results_dir, "/signifLog2Promoters_DOWN_GOBP_barplot_ntop",ntop_GOTERMS,".pdf"))
+ggsave(signifLog2Promoters_DOWN_GOBP_barplot, filename = paste0(NFATc1_mut_vs_WT_results_dir, "/signifLog2Promoters_DOWN_GOBP_barplot_ntop",ntop_GOTERMS,".png"))
+
+```
+
+```{r plotting IL2, include=TRUE, eval=TRUE, message=FALSE}
+# IL2, STAT1
+# IL2 - entrez_id: 3558
+# - [ ] add peak info - where is the peak!!!
+library(karyoploteR)
+# is start coming from BiocGenerics?
+gene_cols <- c("gene_id", "tx_id", "tx_name", "tx_chrom", "tx_strand")
+txdb_genes <- GenomicFeatures::genes(txdb, columns=gene_cols, single.strand.genes.only=TRUE)
+IL2_region <- txdb_genes[txdb_genes$gene_id == "3558"]
+extend_region <- 5000
+start(IL2_region) <- start(IL2_region)  - extend_region  # extending region aroung IL2
+end(IL2_region) <- end(IL2_region)  + extend_region
+start(IL2_region)
+end(IL2_region)
+
+genes.data <- karyoploteR::makeGenesDataFromTxDb(txdb = txdb,
+                                    karyoplot=kp,
+                                    plot.transcripts = TRUE, 
+                                    plot.transcripts.structure = TRUE)
+
+kp <- plotKaryotype(genome = "hg38", zoom = IL2_region, cex=2)
+karyoploteR::kpPlotGenes(kp, data=genes.data)
+
+genes.data <- karyoploteR::addGeneNames(genes.data, orgDb="auto")
+genes.data <- karyoploteR::mergeTranscripts(genes.data)
+
+pp <- getDefaultPlotParams(plot.type=1)
+pp$leftmargin <- 0.15
+pp$topmargin <- 15
+pp$bottommargin <- 15
+pp$ideogramheight <- 5
+pp$data1inmargin <- 10
+pp$data1outmargin <- 0
+
+gene_toPlot="IL2"
+
+# using .bigWig files generate by BSF
+# normalization:  (reads per genome coverage, RPGC).
+# 1x (effective genome size 2747877777) 
+# bamFilesList: ['/nobackup/lab_bsf/projects/BSA_0612_NFATC1_T_Cells/atacseq_results/PID1185/mapped/PID1185.filtered.bam']
+# binLength: 10
+# ignoreDuplicates: False
+# chrsToSkip: []
+samples_bw <- c(PID1185="/home/rstudio/workspace/datasets/atacseq/bam_files/PID1185.bigWig",
+                PID1180="/home/rstudio/workspace/datasets/atacseq/bam_files/PID1180.bigWig",
+                ND_MK="/home/rstudio/workspace/datasets/atacseq/bam_files/ND_MK.bigWig",
+                ND_RJH="/home/rstudio/workspace/datasets/atacseq/bam_files/ND_RJH.bigWig")
+
+kp <- plotKaryotype(zoom = IL2_region, cex=2, genome = "hg38", plot.params = pp)
+kpAddBaseNumbers(kp, tick.dist = 10000, minor.tick.dist = 2000,
+                add.units = TRUE, cex=2, tick.len = 3)
+kpAddMainTitle(kp, paste0("ATAC-seq signal in ", gene_toPlot), cex=2)
+kpPlotGenes(kp, data=genes.data, r0=0, r1=0.1, gene.name.cex = 2.5)
+
+#atac-seq signal
+total.tracks <- length(samples_bw) #+length(DNA.binding)
+out.at <- autotrack(1:length(samples_bw), total.tracks, margin = 0.3, r0=0.23)
+
+# normalized?
+# https://rdrr.io/bioc/karyoploteR/man/kpPlotBAMDensity.html
+patient_samples=c("PID1185", "PID1180")
+ymax_limit=16
+for(i in seq_len(length(samples_bw))) {
+  bigwig.file <- samples_bw[i]
+  at <- autotrack(i, length(samples_bw), r0=out.at$r0, r1=out.at$r1, margin = 0.1)
+  if (names(bigwig.file) %in% patient_samples) {
+      kp <- kpPlotBigWig(kp, data=bigwig.file, 
+                         ymax=ymax_limit,
+                         #ymax="visible.region",
+                     r0=at$r0, r1=at$r1, col = "red")
+  } else {
+    kp <- kpPlotBigWig(kp, data=bigwig.file, 
+                       ymax=ymax_limit,
+                       #ymax="visible.region",
+                     r0=at$r0, r1=at$r1, col = "cadetblue2")
+  }
+    
+  computed.ymax <- ceiling(kp$latest.plot$computed.values$ymax)  # 26 - max from C6; fix the scale?!
+  kpAxis(kp, ymin=0, 
+         ymax=computed.ymax, 
+         #tick.pos = c(130),
+         tick.pos = computed.ymax, 
+         r0=at$r0, r1=at$r1, cex=1.6)
+  kpAddLabels(kp, labels = "RPGC", r0=at$r0, r1=at$r1,
+              cex=1.0, srt=90, pos=1, label.margin = 0.02)  # 0.14
+  kpAddLabels(kp, labels = names(samples_bw)[i], r0=at$r0, r1=at$r1, 
+              cex=1.6, label.margin = 0.05)  # 0.035
+}
+
+
+# saving as pdf
+pdf(file = file.path(NFATc1_mut_vs_WT_results_dir, paste0("gene_tracks_",gene_toPlot, ".pdf")), width=18, height=10)
+kp <- plotKaryotype(zoom = IL2_region, cex=2, genome = "hg38", plot.params = pp)
+kpAddBaseNumbers(kp, tick.dist = 10000, minor.tick.dist = 2000,
+                add.units = TRUE, cex=2, tick.len = 3)
+kpAddMainTitle(kp, paste0("ATAC-seq signal in ", gene_toPlot), cex=2)
+kpPlotGenes(kp, data=genes.data, r0=0, r1=0.1, gene.name.cex = 2.5)
+
+#atac-seq signal
+total.tracks <- length(samples_bw) #+length(DNA.binding)
+out.at <- autotrack(1:length(samples_bw), total.tracks, margin = 0.3, r0=0.23)
+for(i in seq_len(length(samples_bw))) {
+  bigwig.file <- samples_bw[i]
+  at <- autotrack(i, length(samples_bw), r0=out.at$r0, r1=out.at$r1, margin = 0.1)
+  if (names(bigwig.file) %in% patient_samples) {
+      kp <- kpPlotBigWig(kp, data=bigwig.file, 
+                         ymax=ymax_limit,
+                         #ymax="visible.region",
+                     r0=at$r0, r1=at$r1, col = "red")
+  } else {
+    kp <- kpPlotBigWig(kp, data=bigwig.file, 
+                       ymax=ymax_limit,
+                       #ymax="visible.region",
+                     r0=at$r0, r1=at$r1, col = "cadetblue2")
+  }
+    
+  computed.ymax <- ceiling(kp$latest.plot$computed.values$ymax)  # 26 - max from C6; fix the scale?!
+  kpAxis(kp, ymin=0, 
+         ymax=computed.ymax, 
+         #tick.pos = c(130),
+         tick.pos = computed.ymax, 
+         r0=at$r0, r1=at$r1, cex=1.6)
+  kpAddLabels(kp, labels = "RPGC", r0=at$r0, r1=at$r1,
+              cex=1.0, srt=90, pos=1, label.margin = 0.02)  # 0.14
+  kpAddLabels(kp, labels = names(samples_bw)[i], r0=at$r0, r1=at$r1, 
+              cex=1.6, label.margin = 0.05)  # 0.035
+}
+
+dev.off()
+
+png(filename = file.path(NFATc1_mut_vs_WT_results_dir, paste0("gene_tracks_",gene_toPlot, ".png")))
+kp <- plotKaryotype(zoom = IL2_region, cex=2, genome = "hg38", plot.params = pp)
+kpAddBaseNumbers(kp, tick.dist = 10000, minor.tick.dist = 2000,
+                add.units = TRUE, cex=2, tick.len = 3)
+kpAddMainTitle(kp, paste0("ATAC-seq signal in ", gene_toPlot), cex=2)
+kpPlotGenes(kp, data=genes.data, r0=0, r1=0.1, gene.name.cex = 2.5)
+
+#atac-seq signal
+total.tracks <- length(samples_bw) #+length(DNA.binding)
+out.at <- autotrack(1:length(samples_bw), total.tracks, margin = 0.3, r0=0.23)
+
+# normalized?
+# https://rdrr.io/bioc/karyoploteR/man/kpPlotBAMDensity.html
+
+for(i in seq_len(length(samples_bw))) {
+  bigwig.file <- samples_bw[i]
+  at <- autotrack(i, length(samples_bw), r0=out.at$r0, r1=out.at$r1, margin = 0.1)
+  if (names(bigwig.file) %in% patient_samples) {
+      kp <- kpPlotBigWig(kp, data=bigwig.file, 
+                         ymax=ymax_limit,
+                         #ymax="visible.region",
+                     r0=at$r0, r1=at$r1, col = "red")
+  } else {
+    kp <- kpPlotBigWig(kp, data=bigwig.file, 
+                       ymax=ymax_limit,
+                       #ymax="visible.region",
+                     r0=at$r0, r1=at$r1, col = "cadetblue2")
+  }
+    
+  computed.ymax <- ceiling(kp$latest.plot$computed.values$ymax)  # 26 - max from C6; fix the scale?!
+  kpAxis(kp, ymin=0, 
+         ymax=computed.ymax, 
+         #tick.pos = c(130),
+         tick.pos = computed.ymax, 
+         r0=at$r0, r1=at$r1, cex=1.6)
+  kpAddLabels(kp, labels = "RPGC", r0=at$r0, r1=at$r1,
+              cex=1.0, srt=90, pos=1, label.margin = 0.02)  # 0.14
+  kpAddLabels(kp, labels = names(samples_bw)[i], r0=at$r0, r1=at$r1, 
+              cex=1.6, label.margin = 0.05)  # 0.035
+}
+
+dev.off()
+
+```
+
+
+```{r finding Motifs, include=FALSE, eval=FALSE, cache=TRUE}
+#genes_interest <- c("IKZF1", "IKZF2", "NFAT5", "NFATC1", "NFATC2", "NFATC3", "NFATC4", "NFKB")
+
+# IKZF1 and IKZF2
+# IKZF1 <- query(MotifDb, c("IKZF1")) 
+# IKZF1_IKAROS <- query(MotifDb, c("IKAROS")) # ?? one match points to one of the above resource: Hsapiens-HOCOMOCOv11-core-C-IKZF1_HUMAN.H11MO.0.C
+# plot motifs for different NFATC(N)
+#NFATC1 <- TFBSTools::query(motifsToScan, c("NFATC1")) 
+# # IKZF2_HELIOS <- query(MotifDb, c("HELIOS")) # NULL
+# JUN <- query(MotifDb, c("JUN"))  #  there are multiple JUN entries
+# 
+# names(IKZF2)
+# 
+# ikzf1_jaspar_Motif <- IKZF1[["Hsapiens-HOCOMOCOv10-IKZF1_HUMAN.H10MO.C"]]
+# ikzf1_Motif <- IKZF1[["Hsapiens-SwissRegulon-IKZF1.SwissRegulon"]]
+# ikzf2_Motif <- IKZF2[["Hsapiens-SwissRegulon-IKZF2.SwissRegulon"]]
+# 
+# ikzf1_Motif[, 1:4]
+# ikzf2_Motif[, 1:4]
+# 
+# seqLogo(ikzf1_jaspar_Motif)
+# seqLogo(ikzf1_Motif)
+# seqLogo(ikzf2_Motif)
+
+# TFBSTools for motif sets
+
+# Identifying Motifs in ATACs-seq ---
+#First we can retrieve a sensible set of motifs to scan for within our mouse tissue ATACseq data.
+#Here we retrieve the vertebrate, JASPAR CORE motifs. We additional specify all_versions is FALSE to only include the latest version of a motif.
+
+if (!file.exists(paste0(results_dir, "/motif_enrichment.RData"))) {
+  #TODO:
+  # [ ] - check effect of normalization?
+  
+  #?getMatrixSet
+  opts <- list()
+  opts[["tax_group"]] <- "vertebrates"
+  opts[["species"]] <- "9606"
+  opts[["collection"]] <- "CORE"
+  opts[["all_versions"]] <- FALSE
+  motifsToScan <- TFBSTools::getMatrixSet(JASPAR2020, opts)
+  
+  # summarizing ATAC signal to Motifs ----
+  # The chromVar package allows for the summarization of ATACseq signal changes to the motifs within peaks.
+  # With this summarization we can potentially identify which motifs may have an important role in a set of ATAC samples compared to other samples.
+  # The chromVar package comes from the same lab and author as the motifmatchr package and so will work well together.
+  
+  # Setting up for chromVar ----
+  #To identify motifs for chomVar we will use motifMatchr with a different set of inputs.
+  #Here we will provide our RangedSummarizedExperiment object contaitng our counts over peaks directly to the matchMotifs function.
+
+  #First we will remove any peaks with less than 5 reads across all samples.
+  SummarizedExperiment::colData(counts_consensus) <- SummarizedExperiment::colData(atacDDS)
+  
+  # using normalized counts from DESeq2
+  #counts(counts_consensus) <- atacDDS_normCounts
+  
+  dim(counts_consensus)
+  counts_consensus_filt <- counts_consensus[rowSums(assay(counts_consensus)) > 5, ]
+  dim(counts_consensus)
+  
+  #Correct GC bias ---
+  
+  #Next we can correct for any potential GC bias which may have arisen in sequencing. 
+  # - there seems to be no GC bias so probably not needed. But check initial QC using also ChIPQC packageS?
+  
+  #For comparing across differing sets of peaks with differing sequences compositions we will need to correct for this bias. We can use the addGCBias and specify our genome as a BSgenome object to correct in chromVar.
+  # Computes GC content for peaks
+  # rather use fasta file - https://greenleaflab.github.io/chromVAR/articles/Introduction.html#visualizing-deviations
+  # or DNAStringSet 
+
+  # added extra
+  # counts_consensus_filt <- chromVAR::filterPeaks(counts_consensus_filt, non_overlapping = TRUE)
+  # dim(counts_consensus_filt)  # makes no difference
+  
+  # added extra
+  #fastq_file <- "/home/peter_r/resources/hg38.fa"
+  #fasta_ref <- Rsamtools::FaFile(fastq_file, index=sprintf("%s.fai", fastq_file))
+  #counts_consensus_filt <- chromVAR::addGCBias(counts_consensus_filt, genome = fasta_ref)  # or rather use FaFile!
+  #B <- chromVAR::addGCBias(counts_consensus_filt, genome = fasta_ref)
+  
+  #library(BSgenome.Hsapiens.UCSC.hg38)
+  counts_consensus_filt <- chromVAR::addGCBias(counts_consensus_filt, genome = BSgenome.Hsapiens.UCSC.hg38)  # or rather use FaFile!
+  #SummarizedExperiment::rowData(counts_consensus_filt)$bias
+  #A <- chromVAR::addGCBias(counts_consensus_filt, genome = BSgenome.Hsapiens.UCSC.hg38)
+  #A_bias <- rowData(A)$bias #head(rowData(A))
+  #B_bias <- rowData(B)$bias #head(rowData(A))
+  #identical(A_bias, B_bias) TRUE
+  # ID motifs in peaks ----
+  
+  # Having corrected for bias, we can use the matchMotifs function again to identify motifs under our ATACseq peaks.
+  # Here we supply our RangedSummarizedExperiment of counts in peaks and the genome of interest to the matchMotifs function and use the default out of matches.
+  
+  # added extra - not used!
+  # but this fetches JASPAR2016!?
+  #motifsToScan <- chromVAR::getJasparMotifs(species = "Homo sapiens", collection = "CORE") # instead of using the above function; compare!
+  
+  # BSgenome.Hsapiens.UCSC.hg38 compare to NCBI sequence used in the PEPATAC
+  # identical with NCBI fasta used in PEPATAC when genome = fasta_ref
+  motif_matches <- motifmatchr::matchMotifs(pwms = motifsToScan, 
+                                            subject = counts_consensus_filt, 
+                                            genome = BSgenome.Hsapiens.UCSC.hg38, 
+                                            out = "matches")
+  motif_matches
+  
+  # Run chromVar ----
+  
+  #Following the identification of motifs in our peaks, we can perform the summarization of ATACseq signal to motifs using the computeDeviations and the computeVariability functions.
+  
+  # Computes deviations in chromatin accessibility across sets of annotations
+  # https://bioconductor.org/packages/release/bioc/vignettes/chromVAR/inst/doc/Introduction.html
+  # library(BiocParallel)
+  BiocParallel::register(BiocParallel::MulticoreParam(8, progressbar = FALSE))
+  set.seed(2021) # !!! seed needs to be set otherwise results differ !!! 
+  #register(SerialParam())
+  
+  # deviations
+  # The function computeDeviations returns a SummarizedExperiment with two “assays”. The first matrix (accessible via deviations(dev) or assays(dev)$deviations) will give the bias corrected “deviation” in accessibility for each set of peaks (rows) for each cell or sample (columns). This metric represent how accessible the set of peaks is relative to the expectation based on equal chromatin accessibility profiles across cells/samples, normalized by a set of background peak sets matched for GC and average accessability. The second matrix (deviationScores(dev) or assays(deviations)$z) gives the deviation Z-score, which takes into account how likely such a score would occur if randomly sampling sets of beaks with similar GC content and average accessibility.
+  
+  # The deviations result contains a SummarizedExperiment object with the Z-scores showing the enrichment for ATACseq signal in each sample for every motif.
+  
+  # Computes deviations in chromatin accessibility across sets of annotations
+  # - [ ] what it actually calculates??? see details!
+  
+  # added extra
+  # per-compute background peaks only on middle bit of overlapping peaks
+  # or potentially use normalized counts from DESeq?! - why are normalized counts not used by default???!
+  # adde extra 
+  #  https://greenleaflab.github.io/chromVAR/articles/Articles/Deviations.html
+  # use group info to calculate expectations!
+  background_peaks <- chromVAR::getBackgroundPeaks(object = counts_consensus_filt) 
+  # expectation below seems to produce same results? all.equal() TRUE
+  access_expectation <- chromVAR::computeExpectations(object = counts_consensus_filt)  # default
+  #access_expectation <- chromVAR::computeExpectations(object = counts_consensus_filt, norm = TRUE) 
+  # Warning message:
+  # In if (norm) { :
+  #  the condition has length > 1 and only the first element will be used
+   # access_expectation <- chromVAR::computeExpectations(object = counts_consensus_filt, group = colData(counts_consensus_filt)$sample_group) # at least two samples for normalization!
+  #access_expectation <- chromVAR::computeExpectations(object = counts_consensus_filt, colData(counts_consensus_filt)$sample_group) 
+  #access_expectation <- chromVAR::computeExpectations(object = counts_consensus_filt, colData(counts_consensus_filt)$sample_group, norm = TRUE) # this or group = "sample_group" are identical!
+
+  chrom_access_deviations <- chromVAR::computeDeviations(object = counts_consensus_filt, 
+                                                         annotations = motif_matches,
+                                                         background_peaks = background_peaks,
+                                                         expectation = access_expectation)
+  # adding samples names
+  #colData(chrom_access_deviations)
+  #colData(counts_consensus_filt)
+  
+  #colData(chrom_access_deviations) <- colData(atacDDS)  # check if order of samples is the same between chrom_access_deviations and atacDDS
+  
+  # plotVariability(variability, use_plotly = FALSE) 
+  sample_cor <- chromVAR::getSampleCorrelation(chrom_access_deviations)
+  
+  #library(pheatmap)
+  annotation_row_sampleCor <- as.data.frame(SummarizedExperiment::colData(chrom_access_deviations)) %>%
+    dplyr::select(genotype)
+  pheatmap::pheatmap(as.dist(sample_cor), 
+                     annotation_row = annotation_row_sampleCor, 
+                     clustering_distance_rows = as.dist(1-sample_cor), 
+                     clustering_distance_cols = as.dist(1-sample_cor), 
+                     filename = paste0(NFATc1_mut_vs_WT_results_motif_dir, "/chrom_access_deviations_sample_corr.pdf"))
+  
+  # assessing similarity
+  tsne_results <- chromVAR::deviationsTsne(chrom_access_deviations, threshold = 1.5, perplexity = 8, 
+                                what = "samples", shiny = FALSE)
+  #ggplot(tsne_results, aes(x = Dim1, y = Dim2)) + geom_point() + 
+  #  chromVAR::chromVAR_theme()
+  # annotation = "IL2", 
+  # check genes for annotation - View(as.data.frame(SummarizedExperiment::rowData(chrom_access_deviations)))
+  tsne_plots <- chromVAR::plotDeviationsTsne(chrom_access_deviations, tsne_results,
+                                             annotation = c("NFATC2", "NFATC3", "NFATC4"),
+                                    sample_column = "genotype", shiny = FALSE)
+  # tsne_plots[[1]]
+  # tsne_plots[[2]]
+  #renv::install("ggpubr")
+  ggpubr::ggexport(plotlist = tsne_plots, 
+                   filename = paste0(NFATc1_mut_vs_WT_results_motif_dir, "/chrom_access_deviations_sample_tsne.pdf"))
+  
+
+  # Motif / kmer similarity
+  inv_tsne_results <- chromVAR::deviationsTsne(chrom_access_deviations, threshold = 1.5, perplexity = 8, 
+                                    what = "annotations", shiny = FALSE)
+  
+  # test from 
+  # https://github.com/GreenleafLab/chromVAR/issues/32
+  
+  data.frame(chrom_access_variability) %>% dplyr::arrange(desc(variability))-> motifVariability
+  motifVariability$rank <- 1:dim(chrom_access_variability)[1]
+  ggplot(motifVariability, aes(x = rank, y = variability)) + geom_point(size = 0.75) +
+    labs(x = "Motif Rank", y = "Accessibility Variability")
+  
+  # check the following for peak selection:
+  # https://github.com/GreenleafLab/chromVAR/issues/81
+  # https://github.com/GreenleafLab/ArchR
+  # how to proceed next - e.g. motif identification
+  motif_similarity_tsne <- ggplot(inv_tsne_results, aes(x = Dim1, y = Dim2)) + geom_point() + 
+    chromVAR::chromVAR_theme()
+    
+  # Differential accessibility and variability of motifs!
+  # https://greenleaflab.github.io/chromVAR/articles/Articles/Applications.html
+  diff_acc <- chromVAR::differentialDeviations(chrom_access_deviations, groups="genotype", parametric = FALSE)
+  motif_annot <- as.data.frame(SummarizedExperiment::rowData(chrom_access_deviations)) %>%
+    tibble::rownames_to_column(var = "motif") %>%
+    dplyr::select(motif, name)
+  diff_acc_annot <- diff_acc %>%
+    tibble::rownames_to_column(var = "motif") %>%
+    dplyr::left_join(., motif_annot, by = "motif")
+  head(diff_acc_annot)  ## parametric = TRUE not enough 'y' observations
+  
+  diff_var <- chromVAR::differentialVariability(chrom_access_deviations, "genotype", parametric = TRUE)
+  diff_var_annot <- diff_var %>%
+    tibble::rownames_to_column(var = "motif") %>%
+    dplyr::left_join(., motif_annot, by = "motif")
+  head(diff_var_annot)
+
+  devZscores <- chromVAR::deviationScores(chrom_access_deviations)
+  devZscores_df <- tibble::rownames_to_column(as.data.frame(devZscores), var="jaspar_id")
+  
+  # function to compute overall variability of motif sets across samples ----
+  chrom_access_variability <- chromVAR::computeVariability(chrom_access_deviations)
+  chrom_access_variability_plot <- chromVAR::plotVariability(chrom_access_variability, use_plotly = FALSE)
+  ggsave(chrom_access_variability_plot, filename = paste0(NFATc1_mut_vs_WT_results_motif_dir, "/chrom_access_variability.pdf"))
+  
+  BiocParallel::register(BiocParallel::SerialParam())
+
+  chrom_access_variability_ord <- chrom_access_variability[order(chrom_access_variability$p_value), ]  # ordering based on p-value
+  #chrom_access_variability_ord[1:10, ]
+
+  #! to store
+  chrom_access_variability_ord_results <- chrom_access_variability_ord %>%
+    tibble::rownames_to_column(var="jaspar_id") %>%
+    dplyr::left_join(., devZscores_df, by = "jaspar_id")
+  
+  # both patient and normals going change in the same direction
+  chrom_access_variability_ord_results_directions <- chrom_access_variability_ord_results %>%
+    dplyr::filter(p_value_adj < 0.05) %>%
+    dplyr::mutate(nd_same_direction = dplyr::if_else(sign(ND_RJH) == sign(ND_MK), TRUE, FALSE),
+                  pat_same_direction = dplyr::if_else(sign(PID1185) == sign(PID1180), TRUE, FALSE)) 
+  
+  chrom_access_variability_ord_results_directions_signifConsistPatients <- chrom_access_variability_ord_results_directions %>%
+    dplyr::filter(nd_same_direction == TRUE & pat_same_direction == TRUE)
+  
+  #sum(chrom_access_variability_ord_results$p_value_adj < 0.05)
+  
+  #plotVariability(chrom_access_variability, use_plotly = FALSE) 
+  
+  message("Saving motif enrichment results")
+  save(counts_consensus, chrom_access_deviations, chrom_access_variability, chrom_access_variability_ord, chrom_access_variability_ord_results, file = paste0(NFATc1_mut_vs_WT_results_motif_dir, "/motif_enrichment.RData"))
+} else {
+  
+  message("Loading motif enrichment results")
+  load(file = paste0(NFATc1_mut_vs_WT_results_motif_dir, "/motif_enrichment.RData"))
+  
+  devZscores <- chromVAR::deviationScores(chrom_access_deviations)
+  devZscores_df <- tibble::rownames_to_column(as.data.frame(devZscores), var="jaspar_id")
+  
+}
+
+# chromVar results ----
+
+# We can use the results from the variability with our Z-score deviations to identify in which sample our motifs are enriched.
+# chromVAR::computeVariability
+ntop <- 50
+#FIXME:
+# change chrom_access_variability_ord ->  chrom_access_variability_ord_signif in topVariable <- chrom_access_variability_ord[1:ntop, ]
+chrom_access_variability_ord_signif <- chrom_access_variability_ord %>%
+  dplyr::filter(p_value_adj < motif_padj_cutoff)
+topVariable <- chrom_access_variability_ord_signif[1:ntop, ]
+topVariable <- tibble::rownames_to_column(topVariable, var="jaspar_id")
+
+#devTop <- merge(topVariable[, 1, drop = FALSE], devZscores, by = 0)  # by = 0 - rownames; but gives random order?!
+devTop <- topVariable %>%
+  dplyr::left_join(., devZscores_df, by = "jaspar_id")
+#devTop[1:2, ]
+
+# A useful way to visualize these results is using a heatmap. Although we cover this in a later session, here we can use the pheatmap library with default settings to illustrate where our most variable motifs are active.
+#devToPlot <- as.matrix(devTop[, -c(1:2)])
+devToPlot <- devTop %>%
+  dplyr::select(name, ND_RJH, ND_MK, PID1180, PID1185) %>%
+  tibble::column_to_rownames(var = "name")
+#rownames(devToPlot) <- devTop[, 2]
+#library(pheatmap)
+annotCol_forHeatmap <- project_metadata %>%
+  dplyr::select(sample_name, genotype) %>%
+  tibble::column_to_rownames(var="sample_name")
+
+pheatmap::pheatmap(devToPlot, 
+                   scale="none", 
+                   cluster_cols = FALSE, 
+                   annotation_col = annotCol_forHeatmap, 
+                   main = paste0("Heatmap of motif enrichment - top ", ntop))
+pheatmap::pheatmap(devToPlot,
+                   scale = "none",
+                   cluster_cols = FALSE,
+                   annotation_col = annotCol_forHeatmap,
+                   main = paste0("Heatmap of motif enrichment - top ", ntop),
+                   filename = file.path(NFATc1_mut_vs_WT_results_motif_dir, paste0("motif_enrichment_signifTop", ntop,".pdf")))
+# 
+# pheatmap::pheatmap(devToPlot, 
+#                    scale = "none", 
+#                    cluster_cols = FALSE,
+#                    annotation_col = annotCol_forHeatmap,
+#                    main = paste0("Heatmap of motif enrichment - top ", ntop),
+#                    filename = file.path(out_dir, paste0("motif_enrichment_signifTop", ntop,".png")))
+#motif_dev_heatmap <- ComplexHeatmap::pheatmap(as.matrix(devToPlot), scale="none", cluster_cols = FALSE)
+
+# replacing heatmap with publication heatmap ----
+library("RColorBrewer")
+annotCol_forHeatmap_colors <- list(genotype = c(  WT="#525252", `NFATc1_mut` = "#fc4e2a"),
+                                   bio_rep = c(`ND_RJH` = "#d9d9d9", `ND_MK` = "#969696", `PID1185` = "#fd8d3c", `PID1180` = "#fd8d3c"))
+#motifs_heatmap <-  
+pheatmap::pheatmap(as.matrix(devToPlot),
+                   color = colorRampPalette(rev(brewer.pal(7, "PiYG")))(100),
+                   scale = "row",
+                   #gaps_col = ph_col_annot%>% arrange(state)%$% table(state) %>% cumsum,
+                   #gaps_row = ph_genes$clust %>% table() %>% cumsum,
+                   cluster_cols = FALSE,
+                   cluster_rows = TRUE,
+                   show_colnames = FALSE,
+                   show_rownames = TRUE,
+                   annotation_col = annotCol_forHeatmap,
+                   #annotation_row = ph_row_annot,
+                   #annotation_legend = FALSE,
+                   annotation_colors = annotCol_forHeatmap_colors,  
+                   #labels_row = row_labels,
+                   fontsize_row = 9,
+                   fontsize = 9)
+
+pheatmap::pheatmap(as.matrix(devToPlot),
+                   color = colorRampPalette(rev(brewer.pal(7, "PiYG")))(100),
+                   scale = "row",
+                   #gaps_col = ph_col_annot%>% arrange(state)%$% table(state) %>% cumsum,
+                   #gaps_row = ph_genes$clust %>% table() %>% cumsum,
+                   cluster_cols = FALSE,
+                   cluster_rows = TRUE,
+                   show_colnames = FALSE,
+                   show_rownames = TRUE,
+                   annotation_col = annotCol_forHeatmap,
+                   #annotation_row = ph_row_annot,
+                   #annotation_legend = FALSE,
+                   annotation_colors = annotCol_forHeatmap_colors,  
+                   #labels_row = row_labels,
+                   fontsize_row = 9,
+                   fontsize = 9,
+                   #cellheight = 9,
+                   main = paste0("Heatmap of motif enrichment - top ", ntop),
+                   filename = file.path(NFATc1_mut_vs_WT_results_motif_dir, paste0("motif_enrichment_signifTop", ntop,".pdf")))
+
+pheatmap::pheatmap(as.matrix(devToPlot),
+                   color = colorRampPalette(rev(brewer.pal(7, "PiYG")))(100),
+                   scale = "row",
+                   #gaps_col = ph_col_annot%>% arrange(state)%$% table(state) %>% cumsum,
+                   #gaps_row = ph_genes$clust %>% table() %>% cumsum,
+                   cluster_cols = FALSE,
+                   cluster_rows = TRUE,
+                   show_colnames = FALSE,
+                   show_rownames = TRUE,
+                   annotation_col = annotCol_forHeatmap,
+                   #annotation_row = ph_row_annot,
+                   #annotation_legend = FALSE,
+                   annotation_colors = annotCol_forHeatmap_colors,  
+                   #labels_row = row_labels,
+                   fontsize_row = 9,
+                   fontsize = 9,
+                   #cellheight = 9,
+                   main = paste0("Heatmap of motif enrichment - top ", ntop),
+                   filename = file.path(NFATc1_mut_vs_WT_results_motif_dir, paste0("motif_enrichment_signifTop", ntop,".png")))
+
+# pdf(file.path(out_dir, paste0("motif_enrichment_signifTop", ntop,".pdf")))
+# grid.draw(motifs_heatmap)
+# dev.off()
+
+#TODO:
+# do actuall stats test that there is significant different in variability between my group of interest
+motif_results_list <- list(motif_variab_raw = chrom_access_variability_ord_results,
+                           motif_variab_signif = chrom_access_variability_ord_results_directions,
+                           motif_variab_signif_direction = chrom_access_variability_ord_results_directions_signifConsistPatients)
+openxlsx::write.xlsx(x = motif_results_list, 
+                     file = paste0(NFATc1_mut_vs_WT_results_motif_dir, "/motif_enrichment.xlsx"),
+                     asTable = TRUE,
+                     overwrite = TRUE) 
+
+
+```
+
+```{r finding Motifs - all, include=FALSE, eval=FALSE, cache=TRUE}
+# Running for all peaks; not just consensus!!!
+
+if (!file.exists(paste0(results_dir, "/motif_enrichment.RData"))) {
+  #?getMatrixSet
+  opts <- list()
+  opts[["tax_group"]] <- "vertebrates"
+  opts[["species"]] <- "9606"
+  opts[["collection"]] <- "CORE"
+  opts[["all_versions"]] <- FALSE
+  motifsToScan <- TFBSTools::getMatrixSet(JASPAR2020, opts)
+  
+  # summarizing ATAC signal to Motifs ----
+  # The chromVar package allows for the summarization of ATACseq signal changes to the motifs within peaks.
+  # With this summarization we can potentially identify which motifs may have an important role in a set of ATAC samples compared to other samples.
+  # The chromVar package comes from the same lab and author as the motifmatchr package and so will work well together.
+  
+  # Setting up for chromVar ----
+  #To identify motifs for chomVar we will use motifMatchr with a different set of inputs.
+  #Here we will provide our RangedSummarizedExperiment object contaitng our counts over peaks directly to the matchMotifs function.
+    bamFL <- Rsamtools::BamFileList(project_metadata$bam_files_path, yieldSize = 5e+06)
+    counts_all_peaks <- GenomicAlignments::summarizeOverlaps(features = nrToCount, 
+                                                           reads = bamFL, 
+                                                           singleEnd = TRUE,
+                                                           ignore.strand = TRUE,
+                                                           fragments = FALSE,
+                                                           param = Rsamtools::ScanBamParam(flag = Rsamtools::scanBamFlag(isDuplicate = FALSE)))
+  
+  dim(counts_all_peaks)
+  counts_filtered <- chromVAR::filterPeaks(counts_all_peaks, non_overlapping = TRUE, min_fragments_per_peak = 10)
+  dim(counts_filtered)
+  
+  # testing using all peaks
+  # AAA <- counts_consensus
+  # counts_consensus <- counts_filtered
+  
+  #First we will remove any peaks with less than 5 reads across all samples.
+  SummarizedExperiment::colData(counts_filtered) <- SummarizedExperiment::colData(atacDDS)
+  
+  # using normalized counts from DESeq2
+  # not using normalized counts!!! - there is no normalization for since peaks are not shared!?
+  #TODO:
+  # [ ] - check with/without normalization for consensus peaks (run above!)
+  #counts(counts_consensus) <- atacDDS_normCounts
+  
+  #Correct GC bias ---
+  
+  #Next we can correct for any potential GC bias which may have arisen in sequencing. 
+  # - there seems to be no GC bias so probably not needed. But check initial QC using also ChIPQC packageS?
+  
+  #For comparing across differing sets of peaks with differing sequences compositions we will need to correct for this bias. We can use the addGCBias and specify our genome as a BSgenome object to correct in chromVar.
+  # Computes GC content for peaks
+  # rather use fasta file - https://greenleaflab.github.io/chromVAR/articles/Introduction.html#visualizing-deviations
+  # or DNAStringSet 
+
+  # added extra
+  # counts_consensus_filt <- chromVAR::filterPeaks(counts_consensus_filt, non_overlapping = TRUE)
+  # dim(counts_consensus_filt)  # makes no difference
+  
+  # added extra
+  #fastq_file <- "/home/peter_r/resources/hg38.fa"
+  #fasta_ref <- Rsamtools::FaFile(fastq_file, index=sprintf("%s.fai", fastq_file))
+  #counts_consensus_filt <- chromVAR::addGCBias(counts_consensus_filt, genome = fasta_ref)  # or rather use FaFile!
+  #B <- chromVAR::addGCBias(counts_consensus_filt, genome = fasta_ref)
+  
+  #library(BSgenome.Hsapiens.UCSC.hg38)
+  counts_filtered <- chromVAR::addGCBias(counts_filtered, genome = BSgenome.Hsapiens.UCSC.hg38)  # or rather use FaFile!
+  #SummarizedExperiment::rowData(counts_consensus_filt)$bias
+  #A <- chromVAR::addGCBias(counts_consensus_filt, genome = BSgenome.Hsapiens.UCSC.hg38)
+  #A_bias <- rowData(A)$bias #head(rowData(A))
+  #B_bias <- rowData(B)$bias #head(rowData(A))
+  #identical(A_bias, B_bias) TRUE
+  # ID motifs in peaks ----
+  
+  # Having corrected for bias, we can use the matchMotifs function again to identify motifs under our ATACseq peaks.
+  # Here we supply our RangedSummarizedExperiment of counts in peaks and the genome of interest to the matchMotifs function and use the default out of matches.
+  
+  # added extra - not used!
+  # but this fetches JASPAR2016!?
+  #motifsToScan <- chromVAR::getJasparMotifs(species = "Homo sapiens", collection = "CORE") # instead of using the above function; compare!
+  
+  # BSgenome.Hsapiens.UCSC.hg38 compare to NCBI sequence used in the PEPATAC
+  # identical with NCBI fasta used in PEPATAC when genome = fasta_ref
+  motif_matches <- motifmatchr::matchMotifs(pwms = motifsToScan, 
+                                            subject = counts_filtered, 
+                                            genome = BSgenome.Hsapiens.UCSC.hg38, 
+                                            out = "matches")
+  motif_matches
+  
+  # Run chromVar ----
+  
+  #Following the identification of motifs in our peaks, we can perform the summarization of ATACseq signal to motifs using the computeDeviations and the computeVariability functions.
+  
+  # Computes deviations in chromatin accessibility across sets of annotations
+  # https://bioconductor.org/packages/release/bioc/vignettes/chromVAR/inst/doc/Introduction.html
+  # library(BiocParallel)
+  BiocParallel::register(BiocParallel::MulticoreParam(8, progressbar = FALSE))
+  set.seed(2021) # !!! seed needs to be set otherwise results differ !!! 
+  #register(SerialParam())
+  
+  # deviations
+  # The function computeDeviations returns a SummarizedExperiment with two “assays”. The first matrix (accessible via deviations(dev) or assays(dev)$deviations) will give the bias corrected “deviation” in accessibility for each set of peaks (rows) for each cell or sample (columns). This metric represent how accessible the set of peaks is relative to the expectation based on equal chromatin accessibility profiles across cells/samples, normalized by a set of background peak sets matched for GC and average accessability. The second matrix (deviationScores(dev) or assays(deviations)$z) gives the deviation Z-score, which takes into account how likely such a score would occur if randomly sampling sets of beaks with similar GC content and average accessibility.
+  
+  # The deviations result contains a SummarizedExperiment object with the Z-scores showing the enrichment for ATACseq signal in each sample for every motif.
+  
+  # Computes deviations in chromatin accessibility across sets of annotations
+  # - [ ] what it actually calculates??? see details!
+  
+  # added extra
+  # per-compute background peaks only on middle bit of overlapping peaks
+  # or potentially use normalized counts from DESeq?! - why are normalized counts not used by default???!
+  # adde extra 
+  #  https://greenleaflab.github.io/chromVAR/articles/Articles/Deviations.html
+  # use group info to calculate expectations!
+  background_peaks <- chromVAR::getBackgroundPeaks(object = counts_filtered) 
+  # expectation below seems to produce same results? all.equal() TRUE
+  access_expectation <- chromVAR::computeExpectations(object = counts_filtered)  # default
+  #access_expectation <- chromVAR::computeExpectations(object = counts_consensus_filt, norm = TRUE) 
+  # Warning message:
+  # In if (norm) { :
+  #  the condition has length > 1 and only the first element will be used
+   # access_expectation <- chromVAR::computeExpectations(object = counts_consensus_filt, group = colData(counts_consensus_filt)$sample_group) # at least two samples for normalization!
+  #access_expectation <- chromVAR::computeExpectations(object = counts_consensus_filt, colData(counts_consensus_filt)$sample_group) 
+  #access_expectation <- chromVAR::computeExpectations(object = counts_consensus_filt, colData(counts_consensus_filt)$sample_group, norm = TRUE) # this or group = "sample_group" are identical!
+
+  chrom_access_deviations <- chromVAR::computeDeviations(object = counts_filtered, 
+                                                         annotations = motif_matches,
+                                                         background_peaks = background_peaks,
+                                                         expectation = access_expectation)
+  # adding samples names
+  #colData(chrom_access_deviations)
+  #colData(counts_consensus_filt)
+  
+  #colData(chrom_access_deviations) <- colData(atacDDS)  # check if order of samples is the same between chrom_access_deviations and atacDDS
+  
+  # plotVariability(variability, use_plotly = FALSE) 
+  sample_cor <- chromVAR::getSampleCorrelation(chrom_access_deviations)
+  
+  #library(pheatmap)
+  annotation_row_sampleCor <- as.data.frame(SummarizedExperiment::colData(chrom_access_deviations)) %>%
+    dplyr::select(genotype)
+  pheatmap::pheatmap(as.dist(sample_cor), 
+                     annotation_row = annotation_row_sampleCor, 
+                     clustering_distance_rows = as.dist(1-sample_cor), 
+                     clustering_distance_cols = as.dist(1-sample_cor), 
+                     filename = paste0(NFATc1_mut_vs_WT_results_motif_allPeaks_dir, "/chrom_access_deviations_sample_corr.pdf"))
+  
+  # assessing similarity
+  tsne_results <- chromVAR::deviationsTsne(chrom_access_deviations, threshold = 1.5, perplexity = 8, 
+                                what = "samples", shiny = FALSE)
+  #ggplot(tsne_results, aes(x = Dim1, y = Dim2)) + geom_point() + 
+  #  chromVAR::chromVAR_theme()
+  # annotation = "IL2", 
+  # check genes for annotation - View(as.data.frame(SummarizedExperiment::rowData(chrom_access_deviations)))
+  tsne_plots <- chromVAR::plotDeviationsTsne(chrom_access_deviations, tsne_results,
+                                             annotation = c("NFATC2", "NFATC3", "NFATC4"),
+                                    sample_column = "genotype", shiny = FALSE)
+  # tsne_plots[[1]]
+  # tsne_plots[[2]]
+  #renv::install("ggpubr")
+  ggpubr::ggexport(plotlist = tsne_plots, 
+                   filename = paste0(NFATc1_mut_vs_WT_results_motif_allPeaks_dir, "/chrom_access_deviations_sample_tsne.pdf"))
+  
+
+  # Motif / kmer similarity
+  inv_tsne_results <- chromVAR::deviationsTsne(chrom_access_deviations, threshold = 1.5, perplexity = 8, 
+                                    what = "annotations", shiny = FALSE)
+  
+  # test from 
+  # https://github.com/GreenleafLab/chromVAR/issues/32
+  
+  data.frame(chrom_access_variability) %>% dplyr::arrange(desc(variability))-> motifVariability
+  motifVariability$rank <- 1:dim(chrom_access_variability)[1]
+  ggplot(motifVariability, aes(x = rank, y = variability)) + geom_point(size = 0.75) +
+    labs(x = "Motif Rank", y = "Accessibility Variability")
+  
+  # check the following for peak selection:
+  # https://github.com/GreenleafLab/chromVAR/issues/81
+  # https://github.com/GreenleafLab/ArchR
+  # how to proceed next - e.g. motif identification
+  motif_similarity_tsne <- ggplot(inv_tsne_results, aes(x = Dim1, y = Dim2)) + geom_point() + 
+    chromVAR::chromVAR_theme()
+    
+  # Differential accessibility and variability of motifs!
+  # https://greenleaflab.github.io/chromVAR/articles/Articles/Applications.html
+  diff_acc <- chromVAR::differentialDeviations(chrom_access_deviations, groups="genotype", parametric = FALSE)
+  motif_annot <- as.data.frame(SummarizedExperiment::rowData(chrom_access_deviations)) %>%
+    tibble::rownames_to_column(var = "motif") %>%
+    dplyr::select(motif, name)
+  diff_acc_annot <- diff_acc %>%
+    tibble::rownames_to_column(var = "motif") %>%
+    dplyr::left_join(., motif_annot, by = "motif")
+  head(diff_acc_annot)  ## parametric = TRUE not enough 'y' observations
+  
+  diff_var <- chromVAR::differentialVariability(chrom_access_deviations, "genotype", parametric = FALSE)
+  diff_var_annot <- diff_var %>%
+    tibble::rownames_to_column(var = "motif") %>%
+    dplyr::left_join(., motif_annot, by = "motif")
+  head(diff_var_annot)
+
+  devZscores <- chromVAR::deviationScores(chrom_access_deviations)
+  devZscores_df <- tibble::rownames_to_column(as.data.frame(devZscores), var="jaspar_id")
+  
+  # function to compute overall variability of motif sets across samples ----
+  chrom_access_variability <- chromVAR::computeVariability(chrom_access_deviations)
+  chrom_access_variability_plot <- chromVAR::plotVariability(chrom_access_variability, use_plotly = FALSE)
+  ggsave(chrom_access_variability_plot, filename = paste0(NFATc1_mut_vs_WT_results_motif_allPeaks_dir, "/chrom_access_variability.pdf"))
+  
+  BiocParallel::register(BiocParallel::SerialParam())
+
+  chrom_access_variability_ord <- chrom_access_variability[order(chrom_access_variability$p_value), ]  # ordering based on p-value
+  #chrom_access_variability_ord[1:10, ]
+
+  #! to store
+  chrom_access_variability_ord_results <- chrom_access_variability_ord %>%
+    tibble::rownames_to_column(var="jaspar_id") %>%
+    dplyr::left_join(., devZscores_df, by = "jaspar_id")
+  
+  # both patient and normals going change in the same direction
+  chrom_access_variability_ord_results_directions <- chrom_access_variability_ord_results %>%
+    dplyr::filter(p_value_adj < 0.05) %>%
+    dplyr::mutate(nd_same_direction = dplyr::if_else(sign(ND_RJH) == sign(ND_MK), TRUE, FALSE),
+                  pat_same_direction = dplyr::if_else(sign(PID1185) == sign(PID1180), TRUE, FALSE)) 
+  
+  chrom_access_variability_ord_results_directions_signifConsistPatients <- chrom_access_variability_ord_results_directions %>%
+    dplyr::filter(nd_same_direction == TRUE & pat_same_direction == TRUE)
+  
+  #sum(chrom_access_variability_ord_results$p_value_adj < 0.05)
+  
+  #plotVariability(chrom_access_variability, use_plotly = FALSE) 
+  
+  message("Saving motif enrichment results")
+  save(counts_filtered, chrom_access_deviations, chrom_access_variability, chrom_access_variability_ord, chrom_access_variability_ord_results, file = paste0(NFATc1_mut_vs_WT_results_motif_allPeaks_dir, "/motif_enrichment_allPeaks.RData"))
+} else {
+  
+  message("Loading motif enrichment results")
+  load(file = paste0(NFATc1_mut_vs_WT_results_motif_allPeaks_dir, "/motif_enrichment_allPeaks.RData"))
+  
+  devZscores <- chromVAR::deviationScores(chrom_access_deviations)
+  devZscores_df <- tibble::rownames_to_column(as.data.frame(devZscores), var="jaspar_id")
+  
+}
+
+# chromVar results ----
+
+# We can use the results from the variability with our Z-score deviations to identify in which sample our motifs are enriched.
+# chromVAR::computeVariability
+ntop <- 50
+topVariable <- chrom_access_variability_ord[1:ntop, ]
+topVariable <- tibble::rownames_to_column(topVariable, var="jaspar_id")
+
+#devTop <- merge(topVariable[, 1, drop = FALSE], devZscores, by = 0)  # by = 0 - rownames; but gives random order?!
+devTop <- topVariable %>%
+  dplyr::left_join(., devZscores_df, by = "jaspar_id")
+#devTop[1:2, ]
+
+# A useful way to visualize these results is using a heatmap. Although we cover this in a later session, here we can use the pheatmap library with default settings to illustrate where our most variable motifs are active.
+#devToPlot <- as.matrix(devTop[, -c(1:2)])
+devToPlot <- devTop %>%
+  dplyr::select(name, ND_RJH, ND_MK, PID1180, PID1185) %>%
+  tibble::column_to_rownames(var = "name")
+#rownames(devToPlot) <- devTop[, 2]
+#library(pheatmap)
+annotCol_forHeatmap <- project_metadata %>%
+  dplyr::select(sample_name, genotype) %>%
+  tibble::column_to_rownames(var="sample_name")
+
+pheatmap::pheatmap(devToPlot, 
+                   scale="none", 
+                   cluster_cols = FALSE, 
+                   annotation_col = annotCol_forHeatmap, 
+                   main = paste0("Heatmap of motif enrichment - top ", ntop))
+pheatmap::pheatmap(devToPlot,
+                   scale = "none",
+                   cluster_cols = FALSE,
+                   annotation_col = annotCol_forHeatmap,
+                   main = paste0("Heatmap of motif enrichment - top ", ntop),
+                   filename = file.path(NFATc1_mut_vs_WT_results_motif_allPeaks_dir, paste0("motif_enrichment_signifTop", ntop,".pdf")))
+# 
+# pheatmap::pheatmap(devToPlot, 
+#                    scale = "none", 
+#                    cluster_cols = FALSE,
+#                    annotation_col = annotCol_forHeatmap,
+#                    main = paste0("Heatmap of motif enrichment - top ", ntop),
+#                    filename = file.path(out_dir, paste0("motif_enrichment_signifTop", ntop,".png")))
+#motif_dev_heatmap <- ComplexHeatmap::pheatmap(as.matrix(devToPlot), scale="none", cluster_cols = FALSE)
+
+# replacing heatmap with publication heatmap ----
+library("RColorBrewer")
+annotCol_forHeatmap_colors <- list(genotype = c(  WT="#525252", `NFATc1_mut` = "#fc4e2a"),
+                                   bio_rep = c(`ND_RJH` = "#d9d9d9", `ND_MK` = "#969696", `PID1185` = "#fd8d3c", `PID1180` = "#fd8d3c"))
+#motifs_heatmap <-  
+pheatmap::pheatmap(as.matrix(devToPlot),
+                   color = colorRampPalette(rev(brewer.pal(7, "PiYG")))(100),
+                   scale = "row",
+                   #gaps_col = ph_col_annot%>% arrange(state)%$% table(state) %>% cumsum,
+                   #gaps_row = ph_genes$clust %>% table() %>% cumsum,
+                   cluster_cols = FALSE,
+                   cluster_rows = TRUE,
+                   show_colnames = FALSE,
+                   show_rownames = TRUE,
+                   annotation_col = annotCol_forHeatmap,
+                   #annotation_row = ph_row_annot,
+                   #annotation_legend = FALSE,
+                   annotation_colors = annotCol_forHeatmap_colors,  
+                   #labels_row = row_labels,
+                   fontsize_row = 9,
+                   fontsize = 9)
+
+pheatmap::pheatmap(as.matrix(devToPlot),
+                   color = colorRampPalette(rev(brewer.pal(7, "PiYG")))(100),
+                   scale = "row",
+                   #gaps_col = ph_col_annot%>% arrange(state)%$% table(state) %>% cumsum,
+                   #gaps_row = ph_genes$clust %>% table() %>% cumsum,
+                   cluster_cols = FALSE,
+                   cluster_rows = TRUE,
+                   show_colnames = FALSE,
+                   show_rownames = TRUE,
+                   annotation_col = annotCol_forHeatmap,
+                   #annotation_row = ph_row_annot,
+                   #annotation_legend = FALSE,
+                   annotation_colors = annotCol_forHeatmap_colors,  
+                   #labels_row = row_labels,
+                   fontsize_row = 9,
+                   fontsize = 9,
+                   #cellheight = 9,
+                   main = paste0("Heatmap of motif enrichment - top ", ntop),
+                   filename = file.path(NFATc1_mut_vs_WT_results_motif_allPeaks_dir, paste0("motif_enrichment_signifTop", ntop,".pdf")))
+
+pheatmap::pheatmap(as.matrix(devToPlot),
+                   color = colorRampPalette(rev(brewer.pal(7, "PiYG")))(100),
+                   scale = "row",
+                   #gaps_col = ph_col_annot%>% arrange(state)%$% table(state) %>% cumsum,
+                   #gaps_row = ph_genes$clust %>% table() %>% cumsum,
+                   cluster_cols = FALSE,
+                   cluster_rows = TRUE,
+                   show_colnames = FALSE,
+                   show_rownames = TRUE,
+                   annotation_col = annotCol_forHeatmap,
+                   #annotation_row = ph_row_annot,
+                   #annotation_legend = FALSE,
+                   annotation_colors = annotCol_forHeatmap_colors,  
+                   #labels_row = row_labels,
+                   fontsize_row = 9,
+                   fontsize = 9,
+                   #cellheight = 9,
+                   main = paste0("Heatmap of motif enrichment - top ", ntop),
+                   filename = file.path(NFATc1_mut_vs_WT_results_motif_allPeaks_dir, paste0("motif_enrichment_signifTop", ntop,".png")))
+
+# pdf(file.path(out_dir, paste0("motif_enrichment_signifTop", ntop,".pdf")))
+# grid.draw(motifs_heatmap)
+# dev.off()
+
+#TODO:
+# do actuall stats test that there is significant different in variability between my group of interest
+motif_results_list <- list(motif_variab_raw = chrom_access_variability_ord_results,
+                           motif_variab_signif = chrom_access_variability_ord_results_directions,
+                           motif_variab_signif_direction = chrom_access_variability_ord_results_directions_signifConsistPatients)
+openxlsx::write.xlsx(x = motif_results_list, 
+                     file = paste0(NFATc1_mut_vs_WT_results_motif_allPeaks_dir, "/motif_enrichment.xlsx"),
+                     asTable = TRUE,
+                     overwrite = TRUE) 
+
+
+```

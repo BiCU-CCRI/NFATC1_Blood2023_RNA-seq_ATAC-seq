@@ -1,0 +1,1415 @@
+---
+title: "GSEA analysis - Sevgi (NFATc1) and Michael (TMX1)"
+author: "Peter Repiscak"
+date: '`r format(Sys.time(), "%d %B %Y")`'
+output:
+ html_document:
+  code_folding: hide
+  toc: false
+  toc_float: false
+  theme: united
+always_allow_html: true
+params:
+  config_file: "sevgi_michael_config.yaml"
+---
+
+# GSEA analysis
+
+Gene Set Enrichment Analysis (GSEA) run on results from differential gene expresssion analysis (DE) for NFATc1 and TMX1:
+
+* NFATc1 - stimulation_yes_vs_no,genotypeNFATc1_ko.stimulationyes [NFATc1](https://biomedical-sequencing.at/projects/BSA_0540_CD8_Tcells_cf0138e0b17841be9794ef3c4c5ea76d/hg38/rnaseq_deseq_NFATc1/rnaseq_deseq_NFATc1_contrast_stimulation_yes_vs_no_genotypeNFATc1_ko.stimulationyes_against_intercept_genes.tsv)
+
+! add following:
+Also compare against: https://biomedical-sequencing.at/projects/BSA_0540_CD8_Tcells_cf0138e0b17841be9794ef3c4c5ea76d/hg38/rnaseq_deseq_NFATc1/rnaseq_deseq_NFATc1_contrast_stimulation_yes_vs_no_against_intercept_genes.tsv
+what is the difference between global? individual? (combined NFAT and TMX dataset?)
+
+rnaseq_deseq_global_contrast_stimulation_yes_vs_no_against_intercept_genes.tsv
+https://biomedical-sequencing.at/projects/BSA_0540_CD8_Tcells_cf0138e0b17841be9794ef3c4c5ea76d/hg38/rnaseq_deseq_global/rnaseq_deseq_global_contrast_stimulation_yes_vs_no_against_intercept_genes.tsv
+
+rnaseq_deseq_global_contrast_stimulation_yes_vs_no_genotypeNFATc1_ko.stimulationyes_against_intercept_genes.tsv
+https://biomedical-sequencing.at/projects/BSA_0540_CD8_Tcells_cf0138e0b17841be9794ef3c4c5ea76d/hg38/rnaseq_deseq_global/rnaseq_deseq_global_contrast_stimulation_yes_vs_no_genotypeNFATc1_ko.stimulationyes_against_intercept_genes.tsv
+
+
+* TMX1 - genotype_TMX1_ko_vs_WT,genotypeTMX1_ko.stimulationyes [TMX1](https://biomedical-sequencing.at/projects/BSA_0540_CD8_Tcells_cf0138e0b17841be9794ef3c4c5ea76d/hg38/rnaseq_deseq_TMX1/rnaseq_deseq_TMX1_contrast_genotype_TMX1_ko_vs_WT_genotypeTMX1_ko.stimulationyes_against_intercept_genes.tsv)
+
+DE results for other comparisons can be found on the [RNA-seq report](https://biomedical-sequencing.at/projects/BSA_0540_CD8_Tcells_cf0138e0b17841be9794ef3c4c5ea76d/hg38/rnaseq_deseq_report.html) website.
+
+Ranked list was generated from DE results:
+
+1. removing genes with **NA** in *padj* (DESeq filter for lowly/noise expressed genes)
+2. removing genes with **NA** in *gene_name*
+3. ranking based on *log2FoldChange* 
+4. duplicated *gene_name* resolved by keeping one with max(abs(*log2FoldChange*))
+
+```{r TO-DO, include=FALSE, eval=FALSE}
+# [ ] - find datasets they want to analyze
+# [ ] - clean code!
+# [ ] - give them report and schedule quick meeting?!
+# [ ] triangle plot
+# [ ] volcano plot - with highlighting some points?
+
+# resources:
+# https://biomedical-sequencing.at/projects/BSA_0540_CD8_Tcells_cf0138e0b17841be9794ef3c4c5ea76d/hg38/rnaseq_deseq_report.html
+
+
+# see 13.12.2021 OneNote
+GSEA:
+stimulation_yes_vs_no,genotypeNFATc1_ko.stimulationyes = rnaseq_deseq_NFATc1_contrast_stimulation_yes_vs_no_genotypeNFATc1_ko.stimulationyes_against_intercept_genes.tsv
+
+http://www.gsea-msigdb.org/gsea/msigdb/cards/REACTOME_METABOLISM_OF_CARBOHYDRATES.html
+http://www.gsea-msigdb.org/gsea/msigdb/cards/REACTOME_METABOLISM_OF_LIPIDS.html
+http://www.gsea-msigdb.org/gsea/msigdb/cards/REACTOME_KILLING_MECHANISMS.html
+http://www.gsea-msigdb.org/gsea/msigdb/cards/REACTOME_INTERLEUKIN_2_FAMILY_SIGNALING.html
+
+
+genotype_TMX1_ko_vs_WT,genotypeTMX1_ko.stimulationyes = rnaseq_deseq_TMX1_contrast_genotype_TMX1_ko_vs_WT_genotypeTMX1_ko.stimulationyes_against_intercept_genes.tsv
+
+http://www.gsea-msigdb.org/gsea/msigdb/cards/REACTOME_APOPTOSIS.html
+http://www.gsea-msigdb.org/gsea/msigdb/cards/REACTOME_PROTEIN_FOLDING.html
+http://www.gsea-msigdb.org/gsea/msigdb/cards/REACTOME_PROTEIN_REPAIR.html
+http://www.gsea-msigdb.org/gsea/msigdb/cards/REACTOME_UNFOLDED_PROTEIN_RESPONSE_UPR.html
+http://www.gsea-msigdb.org/gsea/msigdb/cards/REACTOME_PREVENTION_OF_PHAGOSOMAL_LYSOSOMAL_FUSION.html
+http://www.gsea-msigdb.org/gsea/msigdb/cards/REACTOME_SUPPRESSION_OF_PHAGOSOMAL_MATURATION.html
+http://www.gsea-msigdb.org/gsea/msigdb/cards/REACTOME_SUPPRESSION_OF_APOPTOSIS.html
+http://www.gsea-msigdb.org/gsea/msigdb/cards/REACTOME_ANTIGEN_PROCESSING_UBIQUITINATION_PROTEASOME_DEGRADATION.html
+http://www.gsea-msigdb.org/gsea/msigdb/cards/REACTOME_ATF4_ACTIVATES_GENES_IN_RESPONSE_TO_ENDOPLASMIC_RETICULUM_STRESS.html
+            http://www.gsea-msigdb.org/gsea/msigdb/cards/REACTOME_METABOLISM_OF_CARBOHYDRATES.html
+http://www.gsea-msigdb.org/gsea/msigdb/cards/REACTOME_METABOLISM_OF_LIPIDS.html
+ 
+Autophagy
+TCR stimulation; immune related - geneset collection!
+
+
+GSEA, ssGSEA?!  
+    
+Data:
+NFATc1
+https://biomedical-sequencing.at/projects/BSA_0540_CD8_Tcells_cf0138e0b17841be9794ef3c4c5ea76d/hg38/rnaseq_deseq_NFATc1/rnaseq_deseq_NFATc1_contrast_stimulation_yes_vs_no_genotypeNFATc1_ko.stimulationyes_against_intercept_genes.tsv
+
+TMX1
+https://biomedical-sequencing.at/projects/BSA_0540_CD8_Tcells_cf0138e0b17841be9794ef3c4c5ea76d/hg38/rnaseq_deseq_TMX1/rnaseq_deseq_TMX1_contrast_genotype_TMX1_ko_vs_WT_genotypeTMX1_ko.stimulationyes_against_intercept_genes.tsv
+
+```
+
+```{r analysis_parameters, include=FALSE}
+# Specifying parameters here ----
+#  only this part should change
+#  in the next chunks there are some basic assumptions about directory structure
+# RAW_DATA_DIR <- file.path(base_dir, "data/raw_data/")  #  directory to store raw files
+# PROCESSED_DATA_DIR <- file.path(base_dir, "data/processed_data/")  #  directory to store processed files
+# RESULTS_DIR <- file.path(base_dir, "results/")  # directory with figures, excel, report,...
+# CACHE_DIR <- file.path(base_dir, "cache/")  #  directory to cached files - e.g. from BiomartR, knitr etc.
+
+# loading project-specific parameters
+# in not interactive way!
+#install.packages("import")
+if(!("import" %in% installed.packages())){install.packages("import")}
+if(!("renv" %in% installed.packages())){remotes::install_github("rstudio/renv")}
+
+import::from(yaml, read_yaml)
+import::from(knitr, opts_chunk)
+
+# rewrite below!
+base_dir <- "/home/rstudio/workspace/"  # SPECIFY
+data_dir <- file.path(base_dir, "datasets") 
+results_dir <- file.path(base_dir, "results_dir") 
+dir.create(data_dir)
+dir.create(results_dir)
+
+# loading config file ----
+config_file <- file.path(base_dir, "sevgi_michael_config.yaml")
+config <- read_yaml(config_file)
+#config <- yaml::read_yaml(params$config_file)
+
+#project setup
+project_name <- config$project_name
+nthreads <- 4  # for furrr multisession
+
+# this make take a while...
+# if the project does not automatically activate run:
+# 0. renv::activate
+#renv::activate(project = base_dir)
+# FOR the first run restore environment and packages from them6_gsea_renv.lock
+#renv::restore(project = base_dir, lockfile = file.path(base_dir, "them6_gsea_renv.lock"), clean=TRUE)
+# 1. restore original environment
+#renv::restore(project = base_dir, lockfile = file.path(base_dir, "them6_gsea_renv.lock"), prompt = FALSE)
+#renv::repair(project = base_dir, lockfile = file.path(base_dir, "them6_gsea_renv.lock"))
+# DO NOT RUN: renv::init(project = base_dir)!!!
+#renv::init(project = base_dir, bioconductor = TRUE)
+#file.copy(from = file.path(base_dir, "renv.lock"), to = file.path(base_dir, "them6_gsea_renv.lock"))
+
+```
+
+```{r initial_setup, include=FALSE}
+set.seed(42)
+
+# report options ----
+# knitr::opts_chunk
+opts_chunk$set(echo = TRUE,
+                      eval = TRUE,
+                      cache.lazy = FALSE,
+                      message=FALSE,
+                      warning=FALSE,
+                      dev = "png",
+                      cache.path = file.path(results_dir,"report","cache/"),
+                      fig.path = file.path(results_dir,"report","files/"))
+options(width=100)
+
+```
+
+```{r define functions}
+
+#' create_rnk_list
+#'
+#' This function creates ranked list for GSEA analysis using data.frame of differentially expressed genes.
+#'
+#' @param de_results_df data.frame of differentially expressed genes for ranking
+#' @param ranking_metric_column for example, log2FC
+#' @param gene_names_column for example, gene_symbol other gene_ids may need conversion to symbol or adjustment in GSEA algorithm and genesets definition.
+#' TO-DO: 
+#'  - move imports here!
+#'  - add padj definition
+create_log2FC_rnk_list <- function(de_results_df=NULL,
+                                   gene_name_column=NULL,
+                                   log2FC_column=NULL,
+                                   padj_column=NULL){
+  import::here("%>%", .from = magrittr)
+  import::here(select, filter, rename, arrange, desc, group_by, summarise, ungroup, .from = dplyr)
+  
+  
+  gene_name_column <- as.name(gene_name_column)
+  log2FC_column <- as.name(log2FC_column)
+  padj_column <- as.name(padj_column)
+  
+  # filtering of de_results_df
+  clean_data <- de_results_df %>%
+    rename(gene_symbol = {{ gene_name_column }},
+           log2FC = {{ log2FC_column }},
+           padj = {{ padj_column }}) %>%
+    filter(!is.na(padj)) %>%  # removing NA padj (DESeq filter for lowly/noise expressed genes)
+    filter(!is.na(gene_symbol)) %>%  # removing NA gene symbols
+    select(gene_symbol, log2FC) %>%
+    group_by(gene_symbol) %>%
+    summarise(log2FC = log2FC[abs(log2FC) == max(abs(log2FC))]) %>%  # duplicated gene_symbols keep one with max(abs(log2FC))
+    #filter(!duplicated(gene_symbol)) %>%  # removing duplicated gene_symbols; randomly keeping one (check log2FC values!)
+    ungroup() %>%
+    arrange(desc(log2FC)) 
+  
+  # creating ranked list
+  rnk_list <- clean_data$log2FC
+  names(rnk_list) <- clean_data$gene_symbol
+    
+  return(rnk_list)
+}
+
+
+gsea_function <- function(geneset=NULL, geneset_name=NULL, ranked_list=NULL, ncores=6){
+  import::here(SnowParam, .from = BiocParallel)
+  import::here(GSEA, .from = clusterProfiler)
+  # added geneset_name mainly for debugging and printing in log
+  # pvalueCutoff = 1, no filtering at this stage
+  # For some pathways, in reality P-values are less than 1e-10. You can set the `eps` argument to zero for better estimation.
+  # consider eps = 0
+  message("...enriching: ", geneset_name)
+  GSEA(geneList = ranked_list,
+       TERM2GENE = geneset,
+       minGSSize = 10,
+       maxGSSize = 500,
+       pvalueCutoff = 1,
+       seed = 123,
+       verbose = TRUE,
+       by = "fgsea",
+       BPPARAM=SnowParam(workers = ncores),
+       eps = 0,
+       nPermSimple = 100000)
+}
+
+gseaPlotESprofile <- function (x, geneSetID, title = "", color = "green", base_size = 11, 
+                         rel_heights = c(1.5, 0.5, 1), subplots = 1:3, ES_geom = "line",
+                         pvalue_table = FALSE, 
+                         NES_table = FALSE,
+                         remove_substring = NULL) {
+  # function based on enrichplot::gseaplot2 [all credit goes to the original author]
+  #  - adding option for NES_table that contains NES, pval, padj
+  #  - added horizontal dashed line at yintercept = 0 for running ES
+  #  - remove_substring = option to shorted geneset name(s) by fixed strink e.g. HALLMARK_ 
+  
+  # require(RColorBrewer) # brewer.pal
+  # require(ggplot2)
+  import::here(brewer.pal, .from = RColorBrewer)
+  import::here(ggplot2)
+  import::here(str_wrap, str_replace_all, .from = stringr)
+  import::here(plot_grid, .from=cowplot)
+  
+  ES_geom <- match.arg(ES_geom, c("line", "dot"))
+  geneList <- position <- NULL
+  if (length(geneSetID) == 1) {
+    gsdata <- gsInfo(x, geneSetID)
+    
+    # cleaning and wrapping long strings
+    #gsdata$Description <- stringr::str_wrap(stringr::str_replace_all(gsdata$Description, pattern = "_", replacement = " "), width=20)
+  }
+  else {
+    gsdata <- do.call(rbind, lapply(geneSetID, gsInfo, object = x))
+  }
+  p <- ggplot(gsdata, aes_(x = ~x)) + xlab(NULL) + theme_classic(base_size) + 
+    theme(panel.grid.major = element_line(colour = "grey92"), 
+          panel.grid.minor = element_line(colour = "grey92"), 
+          panel.grid.major.y = element_blank(), panel.grid.minor.y = element_blank()) + 
+    scale_x_continuous(expand = c(0, 0))
+  if (ES_geom == "line") {
+    es_layer <- geom_line(aes_(y = ~runningScore, color = ~Description), 
+                          size = 1)
+  }
+  else {
+    es_layer <- geom_point(aes_(y = ~runningScore, color = ~Description), 
+                           size = 1, data = subset(gsdata, position == 1))
+  }
+  p.res <- p + es_layer + theme(legend.position = c(0.8, 0.8), 
+                                legend.title = element_blank(), legend.background = element_rect(fill = "transparent"))
+  p.res <- p.res + ylab("Running Enrichment Score") + theme(axis.text.x = element_blank(), 
+                                                            axis.ticks.x = element_blank(), axis.line.x = element_blank(), 
+                                                            plot.margin = margin(t = 0.2, r = 0.2, b = 0, l = 0.2, 
+                                                                                 unit = "cm"))
+  # adding horizontal line to distinguish between neg and pos running enrichment scores
+  p.res <- p.res + geom_hline(yintercept = 0, color="grey", linetype = "dashed")
+  
+  i <- 0
+  for (term in unique(gsdata$Description)) {
+    idx <- which(gsdata$ymin != 0 & gsdata$Description == 
+                   term)
+    gsdata[idx, "ymin"] <- i
+    gsdata[idx, "ymax"] <- i + 1
+    i <- i + 1
+  }
+  p2 <- ggplot(gsdata, aes_(x = ~x)) + geom_linerange(aes_(ymin = ~ymin, 
+                                                           ymax = ~ymax, color = ~Description)) + xlab(NULL) + ylab(NULL) + 
+    theme_classic(base_size) + theme(legend.position = "none", 
+                                     plot.margin = margin(t = -0.1, b = 0, unit = "cm"), axis.ticks = element_blank(), 
+                                     axis.text = element_blank(), axis.line.x = element_blank()) + 
+    scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0))
+  if (length(geneSetID) == 1) {
+    v <- seq(1, sum(gsdata$position), length.out = 9)
+    inv <- findInterval(rev(cumsum(gsdata$position)), v)
+    if (min(inv) == 0) 
+      inv <- inv + 1
+    col = c(rev(brewer.pal(5, "Blues")), brewer.pal(5, "Reds"))
+    ymin <- min(p2$data$ymin)
+    yy <- max(p2$data$ymax - p2$data$ymin) * 0.3
+    xmin <- which(!duplicated(inv))
+    xmax <- xmin + as.numeric(table(inv)[unique(inv)])
+    d <- data.frame(ymin = ymin, ymax = yy, xmin = xmin, 
+                    xmax = xmax, col = col[unique(inv)])
+    p2 <- p2 + geom_rect(aes_(xmin = ~xmin, xmax = ~xmax, 
+                              ymin = ~ymin, ymax = ~ymax, fill = ~I(col)), data = d, 
+                         alpha = 0.9, inherit.aes = FALSE)
+  }
+  df2 <- p$data
+  df2$y <- p$data$geneList[df2$x]
+  p.pos <- p + geom_segment(data = df2, aes_(x = ~x, xend = ~x, 
+                                             y = ~y, yend = 0), color = "grey")
+  p.pos <- p.pos + ylab("Ranked list metric") + xlab("Rank in Ordered Dataset") + 
+    theme(plot.margin = margin(t = -0.1, r = 0.2, b = 0.2, 
+                               l = 0.2, unit = "cm"))
+  if (!is.null(title) && !is.na(title) && title != "") 
+    p.res <- p.res + ggtitle(title)
+  if (length(color) == length(geneSetID)) {
+    p.res <- p.res + scale_color_manual(values = color)
+    if (length(color) == 1) {
+      p.res <- p.res + theme(legend.position = "none")
+      p2 <- p2 + scale_color_manual(values = "black")
+    }
+    else {
+      p2 <- p2 + scale_color_manual(values = color)
+    }
+  }
+  if (pvalue_table) {
+    pd <- x[geneSetID, c("Description", "pvalue", "p.adjust")]
+    names(pd) <- c("Description", "NES", "pval", "padj")
+    pd <- pd[order(pd[, 1], decreasing = FALSE), ]
+    rownames(pd) <- pd$Description
+    pd <- pd[, -1]
+    pd <- round(pd, 4)
+    tp <- tableGrob2(pd, p.res)
+    p.res <- p.res + theme(legend.position = "none") + 
+      annotation_custom(tp, xmin = quantile(p.res$data$x, 0.5), 
+                        xmax = quantile(p.res$data$x, 0.95), 
+                        ymin = quantile(p.res$data$runningScore, 0.75), 
+                        ymax = quantile(p.res$data$runningScore, 0.9))
+  }
+  
+  if (NES_table) {
+    pd <- x[geneSetID, c("Description", "NES", "pvalue", "p.adjust")]
+    names(pd) <- c("Description", "NES", "pval", "padj")
+    pd <- pd[order(pd[, 1], decreasing = FALSE), ]
+    # adjust length of geneset names
+    # make it dynamic
+    # hardcoded removal of hallmark in string
+    if (!is.null(remove_substring)) {
+      #pd$Description <- gsub(pattern = "HALLMARK_", replacement = "", pd$Description) 
+      pd$Description <- gsub(pattern = remove_substring, replacement = "", pd$Description) 
+    }
+    rownames(pd) <- str_wrap(str_replace_all(pd$Description, pattern = "_", replacement = " "), width=30) # original: pd$Description
+
+    pd <- pd[, -1]
+    #pd <- round(pd, 4)
+    pd$NES <- round(pd$NES, 2)
+    pd$pval <- round(pd$pval, 4)
+    pd$padj <- round(pd$padj, 4)
+    tp <- tableGrob2(pd, p.res)
+
+    p.res <- p.res + theme(legend.position = "none") +
+      annotation_custom(tp,
+                        xmin = quantile(p.res$data$x, 0.5),
+                        xmax = quantile(p.res$data$x, 0.95),
+                        ymin = quantile(p.res$data$runningScore, 0.75),
+                        ymax = quantile(p.res$data$runningScore, 0.9))
+  
+  }
+  
+  plotlist <- list(p.res, p2, p.pos)[subplots]
+  n <- length(plotlist)
+  plotlist[[n]] <- plotlist[[n]] + theme(axis.line.x = element_line(), 
+                                         axis.ticks.x = element_line(), axis.text.x = element_text())
+  if (length(subplots) == 1) 
+    return(plotlist[[1]] + theme(plot.margin = margin(t = 0.2, 
+                                                      r = 0.2, b = 0.2, l = 0.2, unit = "cm")))
+  if (length(rel_heights) > length(subplots)) 
+    rel_heights <- rel_heights[subplots]
+    plot_grid(plotlist = plotlist, ncol = 1, align = "v", rel_heights = rel_heights)
+}
+
+tableGrob2 <- function(d, p = NULL) {
+  d <- d[order(rownames(d)),]
+  tp <- gridExtra::tableGrob(d) # from gridExtra
+  if (is.null(p)) {
+    return(tp)
+  }
+  pcol <- unique(ggplot_build(p)$data[[1]][["colour"]])
+  j <- which(tp$layout$name == "rowhead-fg")
+  
+  for (i in seq_along(pcol)) {
+    tp$grobs[j][[i+1]][["gp"]] = grid::gpar(col = pcol[i])
+  }
+  return(tp)
+}
+
+# from enrichplot
+gsInfo <- function(object, geneSetID) {
+  geneList <- object@geneList
+  
+  if (is.numeric(geneSetID))
+    geneSetID <- object@result[geneSetID, "ID"]
+  
+  geneSet <- object@geneSets[[geneSetID]]
+  exponent <- object@params[["exponent"]]
+  df <- gseaScores(geneList, geneSet, exponent, fortify=TRUE)
+  df$ymin=0
+  df$ymax=0
+  pos <- df$position == 1
+  h <- diff(range(df$runningScore))/20
+  df$ymin[pos] <- -h
+  df$ymax[pos] <- h
+  df$geneList <- geneList
+  
+  df$Description <- object@result[geneSetID, "Description"]
+  return(df)
+}
+#gseaScores <- getFromNamespace("gseaScores", "DOSE")
+import:::here(gseaScores, .from = DOSE)
+```
+
+
+```{r run in the terminal, eval = FALSE, include = FALSE}
+#rmarkdown::render(output_file = stringr::str_replace_all(date(),c(" +"="-", ":"="_")), input = here::here("/home/peter_r/scripts/tiaf1_analysis.Rmd"), output_dir = file.path("/home/peter_r/results/report","html/"))
+
+# rmarkdown::render(input = "/home/peter_r/scripts/tiaf1_analysis_combined.Rmd", output_file = stringr::str_replace_all(date(),c(" +"="-", ":"="_")), output_dir = file.path("/home/peter_r/results/report","html/"))
+# rmarkdown::render(input = "/home/peter_r/scripts/tiaf1_analysis_perPatient.Rmd", output_file = stringr::str_replace_all(date(),c(" +"="-", ":"="_")), output_dir = file.path("/home/peter_r/results/report","html/"))
+```
+
+```{r libraries, message=FALSE}
+# ! use library(include.only = c("","")) # to include only needed functions; similar to import xxx from x
+#install.packages("umap")
+
+# if not already imported above!
+#install.packages("import")
+
+# NOT THIS ONE!BiocManager::install("msigdb")  #https://bioconductor.org/packages/release/data/experiment/vignettes/msigdb/inst/doc/msigdb.html
+#install.packages("furrr")
+#BiocManager::install("clusterProfiler")  #https://yulab-smu.top/biomedical-knowledge-mining-book/clusterprofiler-go.html
+# if there are issues with installation: 
+# https://github.com/YuLab-SMU/clusterProfiler/issues/371
+# https://github.com/YuLab-SMU/clusterProfiler/issues/374
+# install_version("rvcheck", version = "0.1.8", repos = "http://cran.us.r-project.org")
+#remotes::install_github("YuLab-SMU/clusterProfiler")
+# install.packages("msigdbr") # msigdbr_7.2.1.tar.gz
+
+# optional extension for function definition
+# remotes::install_github("milesmcbain/fnmate")
+
+# importing only key functions that are actually used - not to polute namespace!
+import::from(readr, read_csv)
+import::from(magrittr, "%>%")
+import::from(dplyr, mutate, select, filter, rename, arrange, desc, group_by, summarise, ungroup)  # dplyr_mutate = mutate
+import::from(purrr, map)
+import::from(future, plan, multisession, sequential)
+import::from(furrr, furrr_options, future_map2)
+import::from(tibble, rownames_to_column)
+
+
+#import::from(stringr, str_replace_all, str_replace)  
+#import::from(DT, datatable)  
+#import::from(fs, dir_ls)  # for listing directories; - [ ] simplify by directly listing .h5 files
+#import::from(cli, cli_alert_info)
+#import::from(cowplot, theme_cowplot)
+#import::from(ggplot2, ggplot, theme_set, labs, geom_bar, aes, ggtheme)
+import::from(ggplot2, .all=TRUE) # importing all as there is too many
+import::from(RColorBrewer, brewer.pal)
+import::from(kableExtra, kbl)
+import::from(kableExtra, kbl, kable_classic)
+
+
+# rewrite below as imports!
+# library("tidyverse")
+# library("magrittr")
+# library("cowplot")
+# library("BiocParallel")
+# library("gridExtra")
+# library("ezRun")
+# library("glue")
+# library("here")
+# library("GGally")
+# library("kableExtra")
+# library(fs)
+# library(scran)
+# library(BiocParallel)
+# library(EnrichmentBrowser)
+# library(org.Hs.eg.db)
+# library(patchwork)
+# library(ggridges)
+# library(ggrastr)
+# library(RColorBrewer)
+
+
+# for symbol checking
+#install.packages("HGNChelper")
+
+# fgsea
+#BiocManager::install("fgsea")
+# install.packages("tweenr") # needed for enrichplot (give ERROR?)
+#BiocManager::install("enrichplot")  # https://github.com/YuLab-SMU/enrichplot
+# BiocManager::install("clusterProfiler")  #https://yulab-smu.top/biomedical-knowledge-mining-book/clusterprofiler-go.html
+# install.packages("msigdbr") # msigdbr_7.2.1.tar.gz
+
+# include in docker!
+#library(future)
+
+#library(furrr) # parallel replacement of purrr; too memory hungry in multisession run; try to switch to multicore outside Rstudio
+# install.packages("tictoc") for timing
+#library(ComplexHeatmap)
+
+# needed by FindConservedMarkers
+#install.packages('BiocManager')
+#BiocManager::install('multtest')
+#library("multtest")
+#install.packages('metap')
+
+# importing functions ----
+#import::from("scrnaseq_utils.R", calc_seurat_stats, calc_seurat_metrics)
+
+# use sink() to save session info! - as in https://hbctraining.github.io/scRNA-seq_online/lessons/09_merged_SC_marker_identification.html
+#sink("sessionInfo_scrnaseq_27052021.txt")
+```
+
+```{r loading genesets, include=TRUE, eval=TRUE, cache=TRUE}
+
+#msigdbr::msigdbr_collections()
+#View(msigdbr::msigdbr_collections())
+# add immune, C1 and other datasets!
+
+# loading genesets ----
+gs_hallmark <- msigdbr::msigdbr(species = "Homo sapiens", category = c("H")) %>%
+  dplyr::distinct(gs_name, gene_symbol) %>% as.data.frame()  #dplyr::select(gs_name, entrez_gene)
+# C1
+gs_C1_positional <- msigdbr::msigdbr(species = "Homo sapiens", category = c("C1")) %>%
+  dplyr::distinct(gs_name, gene_symbol) %>% as.data.frame()
+# C2
+gs_C2_kegg <- msigdbr::msigdbr(species = "Homo sapiens", category = c("C2"), subcategory = "CP:KEGG") %>%
+  dplyr::distinct(gs_name, gene_symbol) %>% as.data.frame()
+gs_C2_reactome <- msigdbr::msigdbr(species = "Homo sapiens", category = c("C2"), subcategory = "CP:REACTOME") %>%
+  dplyr::distinct(gs_name, gene_symbol) %>% as.data.frame()
+# C3
+gs_C3_MIRDB <- msigdbr::msigdbr(species = "Homo sapiens", category = c("C3"), subcategory = "MIR:MIRDB") %>%
+  dplyr::distinct(gs_name, gene_symbol) %>% as.data.frame()
+gs_C3_GTRD <- msigdbr::msigdbr(species = "Homo sapiens", category = c("C3"), subcategory = "TFT:GTRD") %>%
+  dplyr::distinct(gs_name, gene_symbol) %>% as.data.frame()
+# C5
+gs_C5_GOBP <- msigdbr::msigdbr(species = "Homo sapiens", category = c("C5"), subcategory = "GO:BP") %>%
+  dplyr::distinct(gs_name, gene_symbol) %>% as.data.frame()
+gs_C5_GOCC <- msigdbr::msigdbr(species = "Homo sapiens", category = c("C5"), subcategory = "GO:CC") %>%
+  dplyr::distinct(gs_name, gene_symbol) %>% as.data.frame()
+gs_C5_GOMF <- msigdbr::msigdbr(species = "Homo sapiens", category = c("C5"), subcategory = "GO:MF") %>%
+  dplyr::distinct(gs_name, gene_symbol) %>% as.data.frame()
+gs_C5_HPO <- msigdbr::msigdbr(species = "Homo sapiens", category = c("C5"), subcategory = "HPO") %>%
+  dplyr::distinct(gs_name, gene_symbol) %>% as.data.frame()
+# C7
+gs_C7_IMMUNESIGDB <- msigdbr::msigdbr(species = "Homo sapiens", category = c("C7"), subcategory = "IMMUNESIGDB") %>%
+  dplyr::distinct(gs_name, gene_symbol) %>% as.data.frame()
+gs_C7_VAX <- msigdbr::msigdbr(species = "Homo sapiens", category = c("C7"), subcategory = "VAX") %>%
+  dplyr::distinct(gs_name, gene_symbol) %>% as.data.frame()
+# C8
+gs_C8_celltype <- msigdbr::msigdbr(species = "Homo sapiens", category = c("C8")) %>%
+  dplyr::distinct(gs_name, gene_symbol) %>% as.data.frame()
+
+
+gs_symbol_collection <- list(hallmark = gs_hallmark,
+                             C1_positional = gs_C1_positional,
+                             C2_kegg = gs_C2_kegg,
+                             C2_reactome = gs_C2_reactome,
+                             C3_MIRDB = gs_C3_MIRDB,
+                             C3_GTRD = gs_C3_GTRD,
+                             C5_GOBP = gs_C5_GOBP,
+                             C5_GOCC = gs_C5_GOCC,
+                             C5_GOMF = gs_C5_GOMF,
+                             C5_HPO = gs_C5_HPO,
+                             C7_IMMUNESIGDB = gs_C7_IMMUNESIGDB,
+                             C7_VAX = gs_C7_VAX,
+                             C8_celltype = gs_C8_celltype)
+
+# loading datasets ----
+# invisible(
+# purrr::map(.x = names(config$data_files), .f=function(dataset){
+#   message(config$data_files[[dataset]])
+#   url_adress <- config$data_files[[dataset]]
+#   file_name <- basename(url_adress)
+#   message(paste0("Downloading file for: ", file_name))
+#   
+#   if(!file.exists(file.path(data_dir, file_name))) {
+#   download.file(url = url_adress, destfile = file.path(data_dir, file_name), quiet=TRUE)
+#     } else {
+#     message(paste0("file already exists locally!"))}
+# })
+# )
+
+invisible(
+purrr::map(.x = names(config$data_files$NFATc1), .f=function(dataset){
+  message(config$data_files$NFATc1[[dataset]])
+  url_adress <- config$data_files$NFATc1[[dataset]]
+  file_name <- basename(url_adress)
+  message(paste0("Downloading file for: ", file_name))
+  
+  if(!file.exists(file.path(data_dir, file_name))) {
+  download.file(url = url_adress, destfile = file.path(data_dir, file_name), quiet=TRUE)
+    } else {
+    message(paste0("file already exists locally!"))}
+})
+)
+
+```
+
+```{r GSEA analysis, include=TRUE, eval=TRUE, cache=TRUE}
+
+
+# 
+#NFATc1_raw_list <- purrr::map()
+
+stim_WT_raw <- readr::read_tsv(file = file.path(data_dir, basename(config$data_files$NFATc1$stimulation_yes_vs_no_forWT)))
+stim_NFATc1_raw <- readr::read_tsv(file = file.path(data_dir, basename(config$data_files$NFATc1$`stimulation_yes_vs_no-genotypeNFATc1_ko.stimulationyes`)))
+global_stim_WT_raw <- readr::read_tsv(file = file.path(data_dir, basename(config$data_files$NFATc1$global_stimulation_yes_vs_no_forWT)))
+global_stim_NFATc1_raw <- readr::read_tsv(file = file.path(data_dir, basename(config$data_files$NFATc1$`global_stimulation_yes_vs_no-genotypeNFATc1_ko.stimulationyes`)))
+
+
+TMX1_raw <- readr::read_tsv(file = file.path(data_dir, basename(config$data_files$TMX1)))
+
+#raw_datasets <- list(NFATc1 = NFATc1_raw,
+#                     TMX1 = TMX1_raw)
+
+raw_datasets <- list(stim_WT = stim_WT_raw,
+                     stim_NFATc1 = stim_NFATc1_raw,
+                     global_stim_WT = global_stim_WT_raw,
+                     global_stim_NFATc1 = global_stim_NFATc1_raw)
+
+
+# NFATc1_rnk_list <- create_log2FC_rnk_list(de_results_df = raw_datasets$NFATc1, 
+#                                           gene_name_column = "gene_name",
+#                                           log2FC_column = "log2FoldChange", 
+#                                           padj_column = "padj")
+# 
+# TMX1_rnk_list <- create_log2FC_rnk_list(de_results_df = raw_datasets$TMX1, 
+#                                           gene_name_column = "gene_name",
+#                                           log2FC_column = "log2FoldChange", 
+#                                           padj_column = "padj")
+
+
+# test if pre-selecting protein_coding only has any impact - it should not as in genesets there are predominantly protein_coding
+
+# fix below
+rnk_lists <- purrr::map(names(raw_datasets), ~create_log2FC_rnk_list(de_results_df = raw_datasets[[.x]],
+                                                              gene_name_column = "gene_name",
+                                                              log2FC_column = "log2FoldChange",
+                                                              padj_column = "padj")) %>% setNames(names(raw_datasets))
+
+# test 
+# NFATc1_clean <- NFATc1_raw %>%
+#     rename(gene_symbol = gene_name,
+#            log2FC = log2FoldChange,
+#            padj = padj) %>%
+#     filter(!is.na(padj)) %>%  # removing NA padj (DESeq filter for lowly/noise expressed genes)
+#     filter(!is.na(gene_symbol)) %>%  # removing NA gene symbols
+#     select(gene_symbol, log2FC) %>%
+#     group_by(gene_symbol) %>%
+#     summarise(log2FC = log2FC[abs(log2FC) == max(abs(log2FC))]) %>%  # duplicated gene_symbols keep one with max(abs(log2FC))
+#     #filter(!duplicated(gene_symbol)) %>%  # removing duplicated gene_symbols; randomly keeping one (check log2FC values!)
+#     ungroup() %>%
+#     arrange(desc(log2FC)) 
+# 
+# test_rank <- NFATc1_clean$log2FC
+# names(test_rank) <- NFATc1_clean$gene_symbol
+#   
+# identical(test_rank, rnk_lists$NFATc1) # TRUE
+
+
+# a lot of ties on ranked, but this should be resolve by protein_coding being predominantly in genesets!?
+
+furrr_map_options <- furrr_options(seed = 123)
+plan(multisession, workers = 12)
+#future::plan(sequential)
+
+# ties in the pre-ranked list?
+# a lot of ties when restricting log2FC to certain number of decimal places?
+# model number of ties as a function of rounding!?
+
+# There are ties in the preranked stats (23.51% of the list)
+# [ ] - rewrite below programmatically so it is automated and comply with config.yaml only setup
+
+# NFATc1 runs
+# message("Ties in stim_WT ranked list: ", round(sum(duplicated(rnk_lists$stim_WT)/length(rnk_lists$stim_WT))*100,2))
+# stim_WT_gsea_results <- furrr::future_map2(.x = gs_symbol_collection,
+#                                    .y = names(gs_symbol_collection),
+#                                    .f = function(geneset, geneset_name)
+#                                      gsea_function(geneset=geneset,
+#                                                    geneset_name=geneset_name,
+#                                                    ranked_list=rnk_lists$stim_WT),
+#                                    .options = furrr_map_options,
+#                                    .progress = FALSE)
+
+# message("Ties in stim_NFATc1 ranked list: ", round(sum(duplicated(rnk_lists$stim_NFATc1)/length(rnk_lists$stim_NFATc1))*100,2))
+# stim_NFATc1_gsea_results <- furrr::future_map2(.x = gs_symbol_collection,
+#                                    .y = names(gs_symbol_collection),
+#                                    .f = function(geneset, geneset_name)
+#                                      gsea_function(geneset=geneset,
+#                                                    geneset_name=geneset_name,
+#                                                    ranked_list=rnk_lists$stim_NFATc1),
+#                                    .options = furrr_map_options,
+#                                    .progress = FALSE)
+# 
+# # global
+# message("Ties in global_stim_WT ranked list: ", round(sum(duplicated(rnk_lists$global_stim_WT)/length(rnk_lists$global_stim_WT))*100,2))
+# global_stim_WT_gsea_results <- furrr::future_map2(.x = gs_symbol_collection,
+#                                    .y = names(gs_symbol_collection),
+#                                    .f = function(geneset, geneset_name)
+#                                      gsea_function(geneset=geneset,
+#                                                    geneset_name=geneset_name,
+#                                                    ranked_list=rnk_lists$global_stim_WT),
+#                                    .options = furrr_map_options,
+#                                    .progress = FALSE)
+
+# message("Ties in global_stim_NFATc1 ranked list: ", round(sum(duplicated(rnk_lists$global_stim_NFATc1)/length(rnk_lists$global_stim_NFATc1))*100,2))
+# global_stim_NFATc1_gsea_results <- furrr::future_map2(.x = gs_symbol_collection,
+#                                    .y = names(gs_symbol_collection),
+#                                    .f = function(geneset, geneset_name)
+#                                      gsea_function(geneset=geneset,
+#                                                    geneset_name=geneset_name,
+#                                                    ranked_list=rnk_lists$global_stim_NFATc1),
+#                                    .options = furrr_map_options,
+#                                    .progress = FALSE)
+
+
+
+# message("Ties in NFATc1 ranked list: ", round(sum(duplicated(rnk_lists$NFATc1)/length(rnk_lists$NFATc1))*100,2))
+# NFATc1_gsea_results <- furrr::future_map2(.x = gs_symbol_collection,
+#                                    .y = names(gs_symbol_collection),
+#                                    .f = function(geneset, geneset_name)
+#                                      gsea_function(geneset=geneset,
+#                                                    geneset_name=geneset_name,
+#                                                    ranked_list=rnk_lists$NFATc1),
+#                                    .options = furrr_map_options,
+#                                    .progress = FALSE) 
+# 
+# message("Ties in NFATc1 ranked list: ", round(sum(duplicated(rnk_lists$TMX1)/length(rnk_lists$TMX1))*100,2))
+# TMX1_gsea_results <- furrr::future_map2(.x = gs_symbol_collection,
+#                                    .y = names(gs_symbol_collection),
+#                                    .f = function(geneset, geneset_name)
+#                                      gsea_function(geneset=geneset,
+#                                                    geneset_name=geneset_name,
+#                                                    ranked_list=rnk_lists$TMX1),
+#                                    .options = furrr_map_options,
+#                                    .progress = FALSE) 
+
+plan(sequential)
+
+
+# check output of runs and if correct files are run!?
+
+
+# save RData object
+save(TMX1_gsea_results, 
+     file = file.path(results_dir, "TMX1_gsea_results.RData"))
+save(stim_WT_gsea_results, stim_NFATc1_gsea_results, global_stim_WT_gsea_results, global_stim_NFATc1_gsea_results,  
+     file = file.path(results_dir, "NFATc1_WT_all_gsea_results.RData"))
+
+# NFATc1_gsea_results_df <- map(NFATc1_gsea_results, as.data.frame) %>% setNames(names(NFATc1_gsea_results))
+# TMX1_gsea_results_df <- map(TMX1_gsea_results, as.data.frame) %>% setNames(names(TMX1_gsea_results))
+
+stim_WT_gsea_results_df <- map(stim_WT_gsea_results, as.data.frame) %>% setNames(names(stim_WT_gsea_results))
+stim_NFATc1_gsea_results_df <- map(stim_NFATc1_gsea_results, as.data.frame) %>% setNames(names(stim_NFATc1_gsea_results))
+global_stim_WT_gsea_results_df <- map(global_stim_WT_gsea_results, as.data.frame) %>% setNames(names(global_stim_WT_gsea_results))
+global_stim_NFATc1_gsea_results_df <- map(global_stim_NFATc1_gsea_results, as.data.frame) %>% setNames(names(global_stim_NFATc1_gsea_results))
+
+
+# openxlsx::write.xlsx(NFATc1_gsea_results_df, file = file.path(results_dir, "NFATc1_gsea_results.xlsx"), asTable = TRUE) 
+# openxlsx::write.xlsx(TMX1_gsea_results_df, file = file.path(results_dir, "TMX1_gsea_results.xlsx"), asTable = TRUE) 
+
+openxlsx::write.xlsx(stim_WT_gsea_results_df, file = file.path(results_dir, "stim_WT_gsea_results.xlsx"), asTable = TRUE) 
+openxlsx::write.xlsx(stim_NFATc1_gsea_results_df, file = file.path(results_dir, "stim_NFATc1_gsea_results.xlsx"), asTable = TRUE) 
+openxlsx::write.xlsx(global_stim_WT_gsea_results_df, file = file.path(results_dir, "global_stim_WT_gsea_results.xlsx"), asTable = TRUE) 
+openxlsx::write.xlsx(global_stim_NFATc1_gsea_results_df, file = file.path(results_dir, "global_stim_NFATc1_gsea_results.xlsx"), asTable = TRUE) 
+```
+
+GSEA performed using following genesets - `r names(gs_symbol_collection)`
+
+# GSEA results
+
+unfiltered GSEA results:
+
+[NFATc1 GSEA results](results_dir/NFATc1_gsea_results.xlsx)
+
+[TMX1 GSEA results](results_dir/TMX1_gsea_results.xlsx)
+
+```{r, include=FALSE, eval=TRUE}
+import::from(ggplot2, .all=TRUE) # importing all as there is too many
+
+# rnk_lists
+# rank plots
+rnk_dfs <- purrr::map(.x = names(rnk_lists), .f = function(rnk_name){
+  rnk_list <- rnk_lists[[rnk_name]]
+  
+  data.frame(rnk = seq(1, length(rnk_list)),
+                            rnk_metric = rnk_list) %>%
+  tibble::rownames_to_column(var="gene_name")
+}) %>% setNames(names(rnk_lists))
+
+# rnk_NFATc1_df <- data.frame(rnk = seq(1, length(rnk_lists$NFATc1)),
+#                             rnk_metric = rnk_lists$NFATc1) #%>%
+#   tibble::rownames_to_column(var="gene_name")
+
+rnk_plots <- purrr::map(.x = names(rnk_dfs), .f = function(rnk_name){
+  rnk_df <- rnk_dfs[[rnk_name]]
+  
+  ggplot(rnk_df, aes(x=rnk, y=rnk_metric)) + 
+    geom_line() +
+    geom_point() +
+    theme_bw() +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    labs(title=paste0("Ranked profile for ", rnk_name)) +
+    ylab("log2FC") +
+    xlab("rank in ordered dataset")
+}) %>% setNames(names(rnk_df))
+  
+
+# NFATc1_rank_plot <- ggplot(rnk_NFATc1_df, aes(x=rnk, y=rnk_metric)) + 
+#   geom_line() +
+#   geom_point() +
+#   theme_bw() +
+#   geom_hline(yintercept = 0, linetype = "dashed") +
+#   labs(title="Ranked profile for NFATc1") +
+#   ylab("log2FC") +
+#   xlab("rank in ordered dataset")
+# 
+# rnk_TMX1_df <- data.frame(rnk = seq(1, length(rnk_lists$TMX1)),
+#                             rnk_metric = rnk_lists$TMX1)
+# 
+# TMX1_rank_plot <- ggplot(rnk_TMX1_df, aes(x=rnk, y=rnk_metric)) + 
+#   geom_line() +
+#   geom_point() +
+#   theme_bw() +
+#   geom_hline(yintercept = 0, linetype = "dashed") +
+#   labs(title="Ranked profile for TMX1") +
+#   ylab("log2FC") +
+#   xlab("rank in ordered dataset")
+
+# saving ranked profiles
+# openxlsx::write.xlsx(rnk_NFATc1_df, file = file.path(results_dir, "NFATc1_ranked_list.xlsx"), asTable = TRUE) 
+# openxlsx::write.xlsx(rnk_TMX1_df, file = file.path(results_dir, "TMX1_ranked_list.xlsx"), asTable = TRUE) 
+
+# saving ranked lists
+purrr::map(.x = names(rnk_df), .f = function(rnk_name){
+  message("Saving...", rnk_name)
+  rnk_df <- rnk_dfs[[rnk_name]]
+  
+  
+  openxlsx::write.xlsx(rnk_df, file = file.path(results_dir, paste0(rnk_name,"_ranked_list.xlsx")), asTable = TRUE)
+
+}) 
+
+
+#ggsave(filename = file.path(results_dir, "NFATc1_ranked_profile.png"), plot = NFATc1_rank_plot) 
+#ggsave(filename = file.path(results_dir, "TMX1_ranked_profile.png"), plot = TMX1_rank_plot)
+
+purrr::map(.x = names(rnk_plots), .f = function(rnk_name){
+  message("Saving ranked profile...", rnk_name)
+  rnk_plot <- rnk_plots[[rnk_name]]
+
+  ggsave(filename = file.path(results_dir, paste0(rnk_name,"_ranked_profile.png")), plot = rnk_plot) 
+
+}) 
+
+```
+
+```{plotting triangle plot}
+load(file.path(results_dir, "NFATc1_WT_all_gsea_results.RData"))
+
+stim_NFATc1_gsea_results_df_hallmark <- stim_NFATc1_gsea_results_df$hallmark %>%
+  dplyr::mutate(ID = as.factor(ID))
+
+
+
+GSEA_combined_H_list <- split(GSEA_combined_H, f = GSEA_combined_H$cell_type )
+
+#experiment_names <- unique(gsea_PID_vs_ND_treatmentEffect_hallmark_df_filt$experiment_name)
+GSEA_combined_H_plot_ready <- purrr::map(.x = GSEA_combined_H_list, .f = function(x) {
+  prepareGseaComparisons(gsea_df = x,
+                         experiments = experiments_subset,
+                         padj_cutoff = 0.1,
+                         cluster_NES = TRUE)
+
+})
+
+GSEA_combined_H_plots <- purrr::map(.x = GSEA_combined_H_plot_ready, .f = function(x) {
+  plotGseaComparisons(gsea_plot_ready = x,
+                      padj_cutoff = 0.1)
+
+})
+
+
+
+gsea_df_GeneCount <- stim_NFATc1_gsea_results_df_hallmark %>% group_by(ID) %>%
+  summarise(count = sum(stringr::str_count(core_enrichment, "/")) + 1) # + 1 because counting / not genes!
+gsea_results_plotReady <- dplyr::left_join(stim_NFATc1_gsea_results_df_hallmark, gsea_df_GeneCount, by = "ID") %>%
+  dplyr::mutate(GeneRatio = count/setSize) %>%
+  dplyr::mutate(log10_padj = -log10(p.adjust)) %>%
+  dplyr::mutate(Status=ifelse(NES > 0, "Upregulated", "Downregulated")) %>% # adding status
+  dplyr::mutate(Status=factor(Status, levels = c("Upregulated", "Downregulated"))) # converting to factor and changing levels
+
+gsea_results_plotReady <- purrr::map(.x = stim_NFATc1_gsea_results_df_hallmark, .f = function(gsea_df) {
+  gsea_df_GeneCount <- gsea_df %>% group_by(ID) %>%
+    summarise(count = sum(stringr::str_count(core_enrichment, "/")) + 1) # + 1 because counting / not genes!
+  dplyr::left_join(gsea_df, gsea_df_GeneCount, by = "ID") %>%
+    dplyr::mutate(GeneRatio = count/setSize) %>%
+    dplyr::mutate(log10_padj = -log10(p.adjust)) %>%
+    dplyr::mutate(Status=ifelse(NES > 0, "Upregulated", "Downregulated")) %>% # adding status
+    dplyr::mutate(Status=factor(Status, levels = c("Upregulated", "Downregulated"))) # converting to factor and changing levels
+})
+
+
+```
+
+```{r, incude=FALSE, eval=FALSE}
+      gsea_results <- furrr::future_map2(.x = gs_entreIDs_collection,
+                                         .y = names(gs_entreIDs_collection),
+                                         .f = function(geneset, geneset_name)
+                                           gsea_function(geneset=geneset,
+                                                         geneset_name=geneset_name,
+                                                         ranked_list=rnk_log2FC_geneList),
+                                         .options = furrr_map_options,
+                                         .progress = FALSE) 
+
+      
+      gsea_results_df <- purrr::map(.x = gsea_results, .f = function(x) {
+        temp_df <- as.data.frame(x) 
+        temp_df_coreSymbols <- temp_df %>%
+          tidyr::separate_rows(., core_enrichment, sep = "/", convert = FALSE) %>%
+          dplyr::left_join(., entrez2symbol_df, by = c("core_enrichment" = "entrezgene")) %>%
+          dplyr::rename(core_enrichment_symbols = hgnc_symbol) %>%
+          dplyr::distinct(.) %>%
+          dplyr::group_by(ID) %>%
+          dplyr::summarise(across(.cols = everything(), .fns = ~ paste(unique(.x), collapse = "/")), .groups = "drop") %>%
+          dplyr::mutate(across(c("enrichmentScore", "NES", "pvalue", "p.adjust", "qvalues", "rank"), as.double)) %>%
+          dplyr::mutate(across(c("setSize"), as.integer)) %>%     
+          dplyr::ungroup(.) %>%
+          dplyr::arrange(match(ID, temp_df$ID)) 
+        
+        ntop_signif_gsea <- 20
+gsea_df_h <- gsea_results_df$hallmark
+gsea_df_kegg <- gsea_results_df$C2_kegg
+gsea_df_gobp <- gsea_results_df$C5_GOBP
+
+gsea_results_list <- list(gsea_hallmark = gsea_df_h,
+                          gsea_kegg = gsea_df_kegg,
+                          gsea_gobp = gsea_df_gobp)
+
+gsea_results_signif_UP_ntop <- purrr::map(.x = gsea_results_list, .f = function(gsea_df) {
+  gsea_df %>%
+    dplyr::filter(p.adjust < padj_cutoff & NES > 0) %>%  # significant and upregulated
+    dplyr::arrange(desc(NES)) %>%
+    dplyr::slice_head(n = ntop_signif_gsea) 
+})
+
+gsea_results_plotReady <- purrr::map(.x = gsea_results_signif_UP_ntop, .f = function(gsea_df) {
+  # see https://github.com/YuLab-SMU/DOSE/issues/20
+  # see https://github.com/YuLab-SMU/enrichplot/blob/497b8ba286b9ab8a7664eb81ae467376d0166d23/R/method-fortify.R for gene counting
+  # res$Count <- str_count(res$core_enrichment, "/")
+  # res$GeneRatio <- res$Count / res$setSize
+  # test_A <- gsea_df %>%
+  #   tidyr::separate_rows(., core_enrichment, sep = "/") %>%
+  #   dplyr::group_by(ID) %>%
+  #   dplyr::summarise(Count = n()) %>%
+  #   dplyr::arrange(desc(Count))
+  gsea_df_GeneCount <- gsea_df %>% group_by(ID) %>% 
+    summarise(count = sum(stringr::str_count(core_enrichment, "/")) + 1) # + 1 because counting / not genes!
+  dplyr::left_join(gsea_df, gsea_df_GeneCount, by = "ID") %>% 
+    dplyr::mutate(GeneRatio = count/setSize) %>%
+    dplyr::mutate(log10_padj = -log10(p.adjust)) %>%
+    dplyr::mutate(Status=ifelse(NES > 0, "Upregulated", "Downregulated")) %>% # adding status
+    dplyr::mutate(Status=factor(Status, levels = c("Upregulated", "Downregulated"))) # converting to factor and changing levels
+})
+
+# -log10(padj)
+gsea_results_dotPlots_v1 <- purrr::map(.x = gsea_results_plotReady, .f = function(gsea_df) {
+  padj_limit <- 0.1
+  min_log_padj = -log10(padj_limit) #-log10(padj_cutoff); padb = 0.1
+  max_ceiling_log_padj <- ceiling(max(-log10(gsea_df$p.adjust)))
+  max_round_log_padj <- round(max(-log10(gsea_df$p.adjust)))
+  
+  # plotting NES, -log10(padj), GeneRatio
+  ggplot(data = gsea_df, 
+         mapping=aes(x = NES, 
+                     y = forcats::fct_reorder(Description, NES),
+                     color = -log10(p.adjust),
+                     size = GeneRatio)) +
+    geom_point() + 
+    scale_colour_gradient(low = "yellow", high = "red", na.value = NA) +
+    theme_bw() +
+    ggtitle(paste0("GSEA (p.adj < ", padj_cutoff,")")) +
+    theme(text = element_text(size=12),
+          plot.title = element_text(hjust = 0.5), 
+          axis.title.y =  element_blank(), 
+          axis.text.y = element_text(face = "bold")) 
+})
+
+# count - discrete, geneRatio
+#gsea_results_dotPlots_v2 <- purrr::map(.x = gsea_results_plotReady, .f = function(gsea_df) {
+#   padj_limit <- 0.1
+#   min_log_padj = -log10(padj_limit) #-log10(padj_cutoff); padb = 0.1
+#   max_ceiling_log_padj <- ceiling(max(-log10(gsea_df$p.adjust)))
+#   max_round_log_padj <- round(max(-log10(gsea_df$p.adjust)))
+#   
+#   # plotting NES, Count, GeneRatio
+#   ggplot(data = gsea_df, 
+#          mapping=aes(x = NES, 
+#                      y = forcats::fct_reorder(Description, NES),
+#                      color = GeneRatio,
+#                      size = count)) +
+#     geom_point() + 
+#     #scale_shape_manual(values = c(24, 25), guide=guide_legend(order=1)) + #24 - up triangle, 25 - down triangle
+#     scale_colour_gradient(low = "yellow", high = "red", na.value = NA) +
+#     #scale_fill_gradient(low = "yellow", high = "red", na.value = NA) +
+#     # scale_size(limits = c(min_log_padj, max_ceiling_log_padj), 
+#     #            breaks = c(1.3, seq(2.0, 5, 1)),
+#     #            labels = c("1.3", "2.0", "3.0", "4.0", ">= 5.0"),
+#     #            guide=guide_legend(override.aes = list(shape=17), order=3)) +
+#     theme_bw() +
+#     ggtitle(paste0("GSEA (p.adj < ", padj_cutoff,")")) +
+#     theme(text = element_text(size=12),
+#           plot.title = element_text(hjust = 0.5), 
+#           axis.title.y =  element_blank(), 
+#           axis.text.y = element_text(face = "bold")) 
+# })
+
+# count, geneRatio - discrete
+gsea_results_dotPlots_v3 <- purrr::map(.x = gsea_results_plotReady, .f = function(gsea_df) {
+  padj_limit <- 0.1
+  min_log_padj = -log10(padj_limit) #-log10(padj_cutoff); padb = 0.1
+  max_ceiling_log_padj <- ceiling(max(-log10(gsea_df$p.adjust)))
+  max_round_log_padj <- round(max(-log10(gsea_df$p.adjust)))
+  
+  # plotting NES, Count, GeneRatio
+  ggplot(data = gsea_df, 
+         mapping=aes(x = NES, 
+                     y = forcats::fct_reorder(Description, NES),
+                     color = count,
+                     size = GeneRatio)) +
+    geom_point() + 
+    #scale_shape_manual(values = c(24, 25), guide=guide_legend(order=1)) + #24 - up triangle, 25 - down triangle
+    scale_colour_gradient(low = "yellow", high = "red", na.value = NA) +
+    #scale_fill_gradient(low = "yellow", high = "red", na.value = NA) +
+    # scale_size(limits = c(min_log_padj, max_ceiling_log_padj), 
+    #            breaks = c(1.3, seq(2.0, 5, 1)),
+    #            labels = c("1.3", "2.0", "3.0", "4.0", ">= 5.0"),
+    #            guide=guide_legend(override.aes = list(shape=17), order=3)) +
+    theme_bw() +
+    ggtitle(paste0("GSEA (p.adj < ", padj_cutoff,")")) +
+    theme(text = element_text(size=12),
+          plot.title = element_text(hjust = 0.5), 
+          axis.title.y =  element_blank(), 
+          axis.text.y = element_text(face = "bold")) 
+})
+
+# count, GeneRatio - discrete
+#gsea_results_dotPlots_v4 <- purrr::map(.x = gsea_results_plotReady, .f = function(gsea_df) {
+#   padj_limit <- 0.1
+#   min_log_padj = -log10(padj_limit) #-log10(padj_cutoff); padb = 0.1
+#   max_ceiling_log_padj <- ceiling(max(-log10(gsea_df$p.adjust)))
+#   max_round_log_padj <- round(max(-log10(gsea_df$p.adjust)))
+#   
+#   # plotting NES, -log10(padj), Count, GeneRatio
+#   ggplot(data = gsea_df, 
+#          mapping=aes(x = NES, 
+#                      y = -log10(p.adjust),
+#                      color = count,
+#                      size = GeneRatio,
+#                      label=Description)) +
+#     geom_point() + 
+#     ggrepel::geom_label_repel(show.legend = FALSE) +
+#     scale_colour_gradient(low = "yellow", high = "red", na.value = NA) +
+#     theme_bw() +
+#     ggtitle(paste0("GSEA (p.adj < ", padj_cutoff,")")) +
+#     theme(plot.title = element_text(hjust = 0.5))
+# })
+
+# count - discrete, GeneRatio
+# gsea_results_dotPlots_v5 <- purrr::map(.x = gsea_results_plotReady, .f = function(gsea_df) {
+#   padj_limit <- 0.1
+#   min_log_padj = -log10(padj_limit) #-log10(padj_cutoff); padb = 0.1
+#   max_ceiling_log_padj <- ceiling(max(-log10(gsea_df$p.adjust)))
+#   max_round_log_padj <- round(max(-log10(gsea_df$p.adjust)))
+#   
+#   # plotting NES, -log10(padj), Count, GeneRatio
+#   ggplot(data = gsea_df, 
+#          mapping=aes(x = NES, 
+#                      y = -log10(p.adjust),
+#                      color = GeneRatio,
+#                      size = count,
+#                      label=Description)) +
+#     geom_point() + 
+#     ggrepel::geom_label_repel(show.legend = FALSE) +
+#     scale_colour_gradient(low = "yellow", high = "red", na.value = NA) +
+#     theme_bw() +
+#     ggtitle(paste0("GSEA (p.adj < ", padj_cutoff,")")) +
+#     theme(plot.title = element_text(hjust = 0.5))
+# })
+
+# triangle plots; GeneRation on x-axis
+# gsea_results_trianglePlots <- purrr::map(.x = gsea_results_plotReady, .f = function(gsea_df) {
+#   padj_limit <- 0.1
+#   min_log_padj = -log10(padj_limit) #-log10(padj_cutoff); padb = 0.1
+#   max_ceiling_log_padj <- ceiling(max(-log10(gsea_df$p.adjust)))
+#   max_round_log_padj <- round(max(-log10(gsea_df$p.adjust)))
+# 
+#   ggplot(data = gsea_df,
+#          mapping=aes(x = GeneRatio,
+#                      y = forcats::fct_reorder(Description, GeneRatio),
+#                      shape = Status,
+#                      fill = NES,
+#                      size = -log10(p.adjust))) +
+#     geom_point() +
+#     scale_shape_manual(values = c(24, 25), guide=guide_legend(order=1)) + #24 - up triangle, 25 - down triangle; without this there is no fill!; use also color=NES!?
+#     scale_colour_gradient(low = "yellow", high = "red", na.value = NA) +
+#     scale_fill_gradient(low = "yellow", high = "red", na.value = NA) +
+#     scale_size(limits = c(min_log_padj, max_ceiling_log_padj),
+#                breaks = c(1.3, seq(2.0, 5, 1)),
+#                labels = c("1.3", "2.0", "3.0", "4.0", ">= 5.0"),
+#                guide=guide_legend(override.aes = list(shape=17), order=3)) +
+#     theme_bw() +
+#     ggtitle(paste0("GSEA (p.adj < ", padj_cutoff,")")) +
+#     theme(text = element_text(size=12),
+#           plot.title = element_text(hjust = 0.5),
+#           axis.title.y =  element_blank(),
+#           axis.text.y = element_text(face = "bold"))
+# })
+
+
+# see also other scripts in 
+#marini_txxx1/scripts/PostProcessing.Rmd
+#marini_txxx1/scripts/ArticlePlots.Rmd
+#marini_txxx1/scripts/Bcells_investigation.Rmd
+
+prepareGseaComparisons <- function(gsea_df=NULL,
+                                   padj_cutoff=0.1,
+                                   experiments=NULL,
+                                   remove_gs_string = "HALLMARK_",
+                                   cluster_NES=TRUE){
+
+  # add comments and unit tests and upload to github!!!
+  # gsea_df - gsea data.frame collapes across experiments that contain experiment_name, NES, padj
+
+  if (!is.null(gsea_df) & !is.null(experiments)) {
+    require(dplyr)
+    require(tidyr)
+    require(tibble)
+    # function to extract key data from gsea data.frame and prepare for plotting
+    # [ ] generalize geneset name cleaning for other genesets (REACTOME,...)
+    # [ ] add additioanal checks for colnames and data format
+
+    #cat("padj_cutoff:", padj_cutoff,"\n")
+
+    # NES and padj
+    NES_padj_df <- gsea_df %>%
+      dplyr::select(experiment_name, geneset, NES, padj) %>% # select
+      dplyr::mutate(geneset=gsub(pattern = remove_gs_string, replacement = "", geneset)) %>% # removing HALLMARK_ from genesets; generalize for other genesets!
+      dplyr::mutate(Status=ifelse(NES > 0, "Upregulated", "Downregulated")) %>% # adding status
+      dplyr::mutate(Status=factor(Status, levels = c("Upregulated", "Downregulated"))) # converting to factor and changing levels
+
+    # only NES for clustering
+    NES_df <- gsea_df %>%
+      dplyr::select(experiment_name, geneset, NES) %>%
+      dplyr::mutate(geneset=gsub(pattern = remove_gs_string, replacement = "", geneset)) %>% # removing HALLMARK_ from genesets
+      tidyr::spread(., experiment_name, value=NES) %>% # generate NES 'matrix'
+      tibble::column_to_rownames(., var="geneset")
+
+    # filtering and clustering extracted data
+    #padj_cutoff <- padj_cutoff
+    NES_df_filt <- NES_df %>%
+      dplyr::select(dplyr::one_of(experiments))
+    NES_df_filt_dist <- as.dist(1-cor(t(NES_df_filt))) # correlation on genesets
+    NES_df_filt_hclust <- hclust(NES_df_filt_dist, method="average")
+
+    NES_padj_filt_df <- NES_padj_df %>%
+      dplyr::filter(experiment_name %in% experiments) %>%
+      dplyr::filter(padj < padj_cutoff)
+
+        # Generating ordered data.frame ready for plotting
+    if(cluster_NES) {
+      # re-arranging genesets according to clustering
+      NES_padj_filt_ordered <- NES_padj_filt_df %>%
+        dplyr::mutate(geneset = factor(geneset, levels = NES_df_filt_hclust$labels[NES_df_filt_hclust$order])) %>%
+        dplyr::arrange(geneset)
+    } else {
+      # genesets arranged alphabetically
+      NES_padj_filt_ordered <- NES_padj_filt_df %>%
+        dplyr::mutate(geneset = factor(geneset)) %>%
+        dplyr::arrange(geneset)
+    }
+
+    return(NES_padj_filt_ordered)
+
+  } else {
+    stop("Need to specify gsea_df and experiments to extract!")
+  }
+}
+
+
+plotGseaComparisons <- function(gsea_plot_ready=NA,
+                                padj_cutoff=0.1,
+                                # plot_name=NA,
+                                # plot_dir=ENRICH_DIR_PLOTS,
+                                limit_log10padj = TRUE){
+
+  # [ ] limiting triangle size range; 1.0, 1.3 (-log10(0.05)), 2, 3, 4, 5, ">5"
+  if (!is.null(gsea_plot_ready) ) {
+    # & !is.null(plot_name) & !is.null(plot_dir)
+    require(dplyr)
+    require(ggplot2)
+
+    # Generates triangle and bubble plot from gsea data.frame prepared by prepareGseaComparisons function
+    # [] add simetric limits for NES e.g. -1.5 to 1.5
+    # [] squish NES (x-axis) where there is uninformative space (no data):
+    #   https://stackoverflow.com/questions/35511951/r-ggplot2-collapse-or-remove-segment-of-y-axis-from-scatter-plot
+    squish_trans <- function(from, to, factor) {
+      #require(scales)
+
+      trans <- function(x) {
+
+        if (any(is.na(x))) return(x)
+
+        # get indices for the relevant regions
+        isq <- x > from & x < to
+        ito <- x >= to
+
+        # apply transformation
+        x[isq] <- from + (x[isq] - from)/factor
+        x[ito] <- from + (to - from)/factor + (x[ito] - to)
+
+        return(x)
+      }
+
+            inv <- function(x) {
+
+        if (any(is.na(x))) return(x)
+
+        # get indices for the relevant regions
+        isq <- x > from & x < from + (to - from)/factor
+        ito <- x >= from + (to - from)/factor
+
+        # apply transformation
+        x[isq] <- from + (x[isq] - from) * factor
+        x[ito] <- to + (x[ito] - (from + (to - from)/factor))
+
+        return(x)
+      }
+
+      # return the transformation
+      return(scales::trans_new("squished", trans, inv))
+    }
+    
+       #cat("padj_cutoff:", padj_cutoff,"\n")
+
+    # specify limits and breaks for p.adj
+    padj_limit <- padj_cutoff
+    min_log_padj = -log10(padj_limit) #-log10(padj_cutoff); padb = 0.1
+    max_ceiling_log_padj <- ceiling(max(-log10(gsea_plot_ready$padj)))
+    max_round_log_padj <- round(max(-log10(gsea_plot_ready$padj)))
+
+    if (limit_log10padj) {
+      # generating triangle plot
+      gsea_triangle_plot <- ggplot(data = gsea_plot_ready,
+                                   mapping=aes(x = experiment_name,
+                                               y = geneset,
+                                               colour = Status,
+                                               shape = Status,
+                                               fill = NES,
+                                               size = -log10(padj))) +
+        geom_point() +
+        scale_shape_manual(values = c(24, 25), guide=guide_legend(order=1)) + #24 - up triangle, 25 - down triangle
+        scale_color_manual(values = c("coral3","deepskyblue3"), guide=guide_legend(order=1)) +
+        scale_fill_gradient2(high = "coral3", low = "deepskyblue3", mid = "white", guide=guide_colourbar(order=2), midpoint = 0) +
+        #scale_fill_gradient2(high = "coral3", low = "deepskyblue3", mid = "white") +
+        #scale_size(breaks = c(min_log_padj, 1.3, seq(2.0, max_round_log_padj, 1))) +
+        # scale_size limit reduces to only significant; and changing order to last
+        # scale_size(limits = c(min_log_padj, max_ceiling_log_padj), breaks = c(min_log_padj, 1.3, seq(2.0, max_round_log_padj, 1)),
+        #            guide=guide_legend(override.aes = list(shape=17), order=3)) +
+        scale_size(limits = c(min_log_padj, max_ceiling_log_padj),
+                   # breaks = c(1.0, 1.3, seq(3.0, 5, 2)),
+                   # labels = c("1.0", "1.3", "3.0", ">= 5.0"),
+                   # breaks = c(1.0, 1.3, seq(2.0, 5, 1)),
+                   # labels = c("1.0", "1.3", "2.0", "3.0", "4.0", ">= 5.0"),
+                   breaks = c(1.0, 1.3, seq(2.0, 6, 2)),
+                   labels = c("1.0", "1.3", "2.0", "4.0", ">= 6.0"),
+                   guide=guide_legend(override.aes = list(shape=17), order=3)) +
+        theme_bw() +
+        ggtitle(paste0("GSEA (p.adj < ", padj_cutoff,")")) +
+        #guides(size = guide_legend(override.aes = list(shape=17))) + # -log10(shape)
+        #guides(size = guide_legend(override.aes = list(shape=17))) +
+        theme(#text = element_text(size=8),
+          plot.title = element_text(hjust = 0.5),
+          axis.title.y =  element_blank(),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(angle = 45, hjust = 1, face = "bold"),
+          axis.text.y = element_text(face = "bold")) #axis.text.y = element_text(face = "bold", size = 6)
+
+           # generating bubble plot
+      # gsea_bubble_plot <- ggplot(gsea_plot_ready,
+      #                            mapping = aes(x = NES,
+      #                                          y = geneset,
+      #                                          size = -log10(padj),
+      #                                          fill = as.factor(experiment_name))) +
+      #   geom_point(shape = 21) +
+      #   #scale_x_sqrt() +
+      #   #scale_x_continuous(trans = scales::modulus_trans(4)) +
+      #   #scale_x_continuous(oob = scales::squish()) +
+      #   #scale_x_continuous(trans = squish_trans(-1.0, 1.0, 10)) +
+      #   scale_size(limits = c(min_log_padj, max_ceiling_log_padj),
+      #              breaks = c(1.0, 1.3, seq(2.0, 6, 2)),
+      #              labels = c("1.0", "1.3", "2.0", "4.0", ">= 6.0"),
+      #              guide=guide_legend(override.aes = list(shape=17), order=3)) +
+      #   theme_bw() +
+      #   ggtitle(paste0("GSEA (p.adj < ", padj_cutoff, ")")) +
+      #   #scale_size(limits = c(min_log_padj, max_ceiling_log_padj), breaks = c(1.3, seq(2.0, max_round_log_padj, 1))) + # scale_size limit reduces to only significant
+      #   labs(fill = "Experiment", y = NULL, x = "Normalized enrichment score (NES)") +
+      #   theme(#text = element_text(size=8),
+      #     plot.title = element_text(hjust = 0.5),
+      #     axis.title.y =  element_blank(),
+      #     #axis.title.x = element_blank(),
+      #     #axis.text.x = element_text(angle = 45, hjust = 1, face = "bold"),
+      #     axis.text.y = element_text(face = "bold")) #axis.text.y = element_text(face = "bold", size = 6)
+
+    } else {
+      # generating triangle plot
+      gsea_triangle_plot <- ggplot(data = gsea_plot_ready,
+                                   mapping=aes(x = experiment_name,
+                                               y = geneset,
+                                               colour = Status,
+                                               shape = Status,
+                                               fill = NES,
+                                               size = -log10(padj))) +
+        geom_point() +
+        scale_shape_manual(values = c(24, 25), guide=guide_legend(order=1)) + #24 - up triangle, 25 - down triangle
+        scale_color_manual(values = c("coral3","deepskyblue3"), guide=guide_legend(order=1)) +
+        scale_fill_gradient2(high = "coral3", low = "deepskyblue3", mid = "white", guide=guide_colourbar(order=2), midpoint = 0) +
+        #scale_fill_gradient2(high = "coral3", low = "deepskyblue3", mid = "white") +
+        #scale_size(breaks = c(min_log_padj, 1.3, seq(2.0, max_round_log_padj, 1))) +
+        # scale_size limit reduces to only significant; and changing order to last
+        # scale_size(limits = c(min_log_padj, max_ceiling_log_padj), breaks = c(min_log_padj, 1.3, seq(2.0, max_round_log_padj, 1)),
+        #            guide=guide_legend(override.aes = list(shape=17), order=3)) +
+        scale_size(limits = c(min_log_padj, max_ceiling_log_padj),
+                   breaks = c(1.0, 1.3, seq(2.0, 5, 1)),
+                   guide=guide_legend(override.aes = list(shape=17), order=3)) +
+        theme_bw() +
+        ggtitle(paste0("GSEA (p.adj < ", padj_cutoff,")")) +
+        #guides(size = guide_legend(override.aes = list(shape=17))) + # -log10(shape)
+        #guides(size = guide_legend(override.aes = list(shape=17))) +
+        theme(#text = element_text(size=8),
+          plot.title = element_text(hjust = 0.5),
+          axis.title.y =  element_blank(),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(angle = 45, hjust = 1, face = "bold"),
+          axis.text.y = element_text(face = "bold")) #axis.text.y = element_text(face = "bold", size = 6)
+
+      
+      #       # generating bubble plot
+      # gsea_bubble_plot <- ggplot(gsea_plot_ready,
+      #                            mapping = aes(x = NES,
+      #                                          y = geneset,
+      #                                          size = -log10(padj),
+      #                                          fill = as.factor(experiment_name))) +
+      #   geom_point(shape = 21) +
+      #   scale_size(limits = c(min_log_padj, max_ceiling_log_padj),
+      #              breaks = c(min_log_padj, 1.3, seq(2.0, max_round_log_padj, 1))) + # scale_size limit reduces to only significant
+      #   theme_bw() +
+      #   ggtitle(paste0("GSEA (p.adj < ", padj_cutoff, ")")) +
+      #   #scale_size(limits = c(min_log_padj, max_ceiling_log_padj), breaks = c(1.3, seq(2.0, max_round_log_padj, 1))) + # scale_size limit reduces to only significant
+      #   labs(fill = "Experiment", y = NULL, x = "Normalized enrichment score (NES)") +
+      #   theme(#text = element_text(size=8),
+      #     plot.title = element_text(hjust = 0.5),
+      #     axis.title.y =  element_blank(),
+      #     #axis.title.x = element_blank(),
+      #     #axis.text.x = element_text(angle = 45, hjust = 1, face = "bold"),
+      #     axis.text.y = element_text(face = "bold")) #axis.text.y = element_text(face = "bold", size = 6)
+
+    }
+
+    # saving plots
+    # ggsave(filename = paste0(plot_dir, plot_name, "_triangle.png"), gsea_triangle_plot, width = 20, height = 20, units = "cm")
+    # ggsave(filename = paste0(plot_dir, plot_name, "_triangle.pdf"), gsea_triangle_plot, width = 20, height = 20, units = "cm")
+    # ggsave(filename = paste0(plot_dir, plot_name, "_bubble.png"), gsea_bubble_plot, width = 20, height = 20, units = "cm")
+    # ggsave(filename = paste0(plot_dir, plot_name, "_bubble.pdf"), gsea_bubble_plot, width = 20, height = 20, units = "cm")
+
+    # return plots as list for further inspection, replotting
+    # gsea_plots <- list(gsea_triangle_plot = gsea_triangle_plot,
+    #                    gsea_bubble_plot = gsea_bubble_plot)
+    #gsea_plots <- list(gsea_triangle_plot = gsea_triangle_plot)
+    gsea_plots <- gsea_triangle_plot
+
+    #return(gsea_plots)
+
+  } else {
+    stop("Need to specify gsea_plot_ready, plot_name and plot_dir!")
+  }
+}
+
+
+```
+
+# sessionInfo
+```{r include=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+sessionInfo()
+
+# saving session info
+sink(file.path(results_dir, "sessionInfo_nfxx_tmxx_gsea.txt"))
+sessionInfo()
+sink()
+
+renv::snapshot(lockfile = file.path(base_dir, "nfxx_tmxx_gsea_renv.lock"))
+renv::status(lockfile = file.path(base_dir, "nfxx_tmxx_gsea_renv.lock"))
+
+```

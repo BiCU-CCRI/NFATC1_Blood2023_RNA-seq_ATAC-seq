@@ -1,0 +1,6 @@
+# populate with key parameters!
+project_name: "atacseq_nfatc1"
+data_files: 
+  atacseq: 
+    metadata: "datasets/atacseq/nfxx_atacseq_metadata.csv"
+ 

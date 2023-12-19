@@ -1,0 +1,549 @@
+---
+title: "THEM6: GSEA analysis"
+author: "Peter Repiscak"
+#date: '`r format(Sys.time(), "%d %B %Y")`'
+output:
+ html_document:
+  code_folding: hide
+  toc: true
+  toc_float: false
+  theme: united
+always_allow_html: true
+---
+
+# Brief description
+Gene Set Enrichment Analysis of Them6 differential expression results from 4 conditions (AI_WT, AI_CTL, AI_KO1, AI_KO2) and following comparisons:
+
+- KO1_vs_CTL
+- KO2_vs_CTL
+- KO1_vs_WT
+- KO2_vs_WT
+
+GSEA was perfomed in discovery mode (using gs_hallmark, gs_C2_kegg, gs_C2_reactome, gs_C5_GO(BP|CC|MF)) and supervised mode to assess lipid, sterol or cholesterol pathway down-regulation in THEM6_KO.
+
+
+# Methods
+For gene set enrichment analysis (GSEA), genes from differential expression analysis were ranked according to log2FC and GSEA was carried out on ranked list using clusterProfiler v`r packageVersion("clusterProfiler")` with fgsea v`r packageVersion("fgsea")` algorithm. The GSEA enrichment was done against the GOBP STEROL HOMEOSTASIS gene set obtained from the Molecular Signatures Database (MSigDB) (Liberzon *et al*, 2011) using msigdbr v`r packageVersion("msigdbr")` package. Final GSEA plots were generated using modified version of gseaplot2 from enrichplot package.
+
+```{r analysis_parameters, include=FALSE}
+# Specifying parameters here ----
+if(!("import" %in% installed.packages())){install.packages("import")}
+if(!("renv" %in% installed.packages())){remotes::install_github("rstudio/renv")}
+
+# rewrite below!
+base_dir <- "/home/rstudio/workspace/"
+data_dir <- file.path(base_dir, "datasets") 
+results_dir <- file.path(base_dir, "results_dir") 
+dir.create(results_dir)
+setwd(base_dir)
+
+#project setup
+project_name <- "Them6"
+nthreads <- 4  # for furrr multisession
+
+# this make take a while...
+# https://rstudio.github.io/renv/reference/config.html
+# getOption(x, default = NULL)
+#renv::settings$use.cache()
+# getOption('renv.config.pak.enabled')
+# if the project does not automatically activate run:
+if(Sys.getenv("RENV_PATHS_CACHE") != "/renv_cache") {Sys.setenv(RENV_PATHS_CACHE = "/renv_cache")}
+if(Sys.getenv("RENV_PATHS_LIBRARY") != "/home/rstudio/renv_library") {Sys.setenv(RENV_PATHS_LIBRARY = "/home/rstudio/renv_library")}
+#if(Sys.getenv("RENV_CONFIG_PAK_ENABLED") != "TRUE") {Sys.setenv(RENV_CONFIG_PAK_ENABLED = TRUE)} # ad pak, targets and benchmarkme to docker!!!
+# setting root dir
+# 0. renv::activate
+renv::activate(project = base_dir)
+# DO NOT RUN:
+renv:init()
+# FOR the first run restore environment and packages from them6_gsea_renv.lock 
+# 1. restore original environment
+renv::restore(project = base_dir, lockfile = file.path(base_dir, "them6_gsea_renv.lock"), prompt = FALSE)
+#file.copy(from = file.path(base_dir, "them6_gsea_renv.lock"), to = file.path(base_dir, "renv.lock")) # to use with renv::diagnostics()
+```
+
+```{r initial_setup, include=FALSE}
+set.seed(42)
+
+import::from(knitr, opts_chunk)
+
+# report options ----
+# knitr::opts_chunk
+opts_chunk$set(echo = TRUE,
+                      eval = TRUE,
+                      cache.lazy = FALSE,
+                      message=FALSE,
+                      warning=FALSE,
+                      dev = "png")
+
+# cache.path = file.path(results_dir,"report","cache/")
+# fig.path = file.path(results_dir,"report","files/")                     
+                     
+options(width=100)
+
+```
+
+```{r run in the terminal, eval = FALSE, include = FALSE}
+# run in terminal to generate report
+rmarkdown::render(output_file = file.path(base_dir, "them6_gsea.html"), 
+                  input = here::here("them6_gsea.Rmd"))
+
+# rmarkdown::render(input = "/home/peter_r/analysis/them6_gsea.Rmd", output_file = stringr::str_replace_all(date(),c(" +"="-", ":"="_")), output_dir = file.path("/home/peter_r/analysis/report","html/"))
+```
+
+```{r libraries, message=FALSE}
+# importing only key functions that are actually used - not to polute namespace!
+import::from(readr, read_csv)
+import::from(magrittr, "%>%")
+import::from(dplyr, mutate, select, filter, rename, arrange, desc, group_by, summarise, ungroup)  # dplyr_mutate = mutate
+import::from(purrr, map)
+import::from(future, plan, multisession, sequential)
+import::from(furrr, furrr_options, future_map2)
+import::from(ggplot2, .all=TRUE) # importing all as there is too many
+#import::from(.from = DOSE, gseaScores)
+             
+# importing functions ----
+#https://import.rticulate.org/articles/import.html#advanced-usage-1
+# renv::install('bit64')
+import::from(.from = here::here("scripts/utils.R"), "save_rds", "digest_match", "create_rnk_list", "gsea_function", "gseaPlotESprofile", "tableGrob2", "gsInfo", .character_only=TRUE)
+import:::from(gseaScores, .from = DOSE)
+
+# if there is an issue with clusterProfiler: "object 'get_fun_from_pkg' not found"
+# downgrade "rvcheck":
+# renv::install("rvcheck@0.1.8") rather than devtools::install_version("rvcheck", version = "0.1.8", repos = "http://cran.us.r-project.org")
+# and re-install renv::install("bioc::clusterProfiler") rather than BiocManager::install("clusterProfiler")
+
+```
+
+```{r loading datasets and genesets, include=FALSE, eval=TRUE}
+# loading datasets ----
+# md5_digest them6_deseq2_selColumns_datasets.rds: 806547a11fb22309f4515f31033d6fed
+raw_datasets <- readRDS(file.path(data_dir, "them6_deseq2_selColumns_datasets.rds"))
+# digest::digest(raw_datasets, algo = "md5")
+message("Correct data file loaded: ", digest_match(x = raw_datasets, digestfile = file.path(data_dir, "them6_deseq2_selColumns_datasets_digest.md5")))
+
+# check if correct data is loaded in case of missing _digest.md5
+if (digest::digest(raw_datasets, algo = "md5") != "806547a11fb22309f4515f31033d6fed") {
+  warning("raw_datasets md5 is: ", digest::digest(raw_datasets, algo = "md5"), " and it differs from expected: 806547a11fb22309f4515f31033d6fed")
+}
+
+# loading genesets ----
+gs_hallmark <- msigdbr::msigdbr(species = "Homo sapiens", category = c("H")) %>%
+  dplyr::distinct(gs_name, gene_symbol) %>% as.data.frame()  #dplyr::select(gs_name, entrez_gene)
+gs_C2_kegg <- msigdbr::msigdbr(species = "Homo sapiens", category = c("C2"), subcategory = "CP:KEGG") %>%
+  dplyr::distinct(gs_name, gene_symbol) %>% as.data.frame()
+gs_C2_reactome <- msigdbr::msigdbr(species = "Homo sapiens", category = c("C2"), subcategory = "CP:REACTOME") %>%
+  dplyr::distinct(gs_name, gene_symbol) %>% as.data.frame()
+gs_C5_GOBP <- msigdbr::msigdbr(species = "Homo sapiens", category = c("C5"), subcategory = "GO:BP") %>%
+  dplyr::distinct(gs_name, gene_symbol) %>% as.data.frame()
+gs_C5_GOCC <- msigdbr::msigdbr(species = "Homo sapiens", category = c("C5"), subcategory = "GO:CC") %>%
+  dplyr::distinct(gs_name, gene_symbol) %>% as.data.frame()
+gs_C5_GOMF <- msigdbr::msigdbr(species = "Homo sapiens", category = c("C5"), subcategory = "GO:MF") %>%
+  dplyr::distinct(gs_name, gene_symbol) %>% as.data.frame()
+
+gs_symbol_collection <- list(hallmark = gs_hallmark,
+                             C2_kegg = gs_C2_kegg,
+                             C2_reactome = gs_C2_reactome,
+                             C5_GOBP = gs_C5_GOBP,
+                             C5_GOCC = gs_C5_GOCC,
+                             C5_GOMF = gs_C5_GOMF)
+
+```
+
+```{r Running GSEA on selected genesets, include=FALSE, eval=TRUE}
+# generating list of ranked lists (for each of the comparisons)
+rnk_lists <- map(names(raw_datasets), ~create_rnk_list(data_name = .x, raw_datasets = raw_datasets)) %>% setNames(names(raw_datasets))
+
+# running GSEA analysis ----
+if (!file.exists(file.path(results_dir, "them6_gsea_results.rds"))) {
+  message("Generating GSEA results...")
+  
+  furrr_map_options <- furrr_options(seed = 123)
+  if(nthreads > 1) {plan(multisession, workers = nthreads)} else {plan(sequential)} 
+  
+  KO1_vs_CTL_gsea_results <- furrr::future_map2(.x = gs_symbol_collection,
+                                                .y = names(gs_symbol_collection),
+                                                .f = function(geneset, geneset_name)
+                                                  gsea_function(geneset=geneset,
+                                                                geneset_name=geneset_name,
+                                                                ranked_list=rnk_lists$KO1_vs_CTL),
+                                                .options = furrr_map_options,
+                                                .progress = FALSE) 
+  
+  KO2_vs_CTL_gsea_results <- furrr::future_map2(.x = gs_symbol_collection,
+                                                .y = names(gs_symbol_collection),
+                                                .f = function(geneset, geneset_name)
+                                                  gsea_function(geneset=geneset,
+                                                                geneset_name=geneset_name,
+                                                                ranked_list=rnk_lists$KO2_vs_CTL),
+                                                .options = furrr_map_options,
+                                                .progress = FALSE) 
+  
+  KO1_vs_WT_gsea_results <- furrr::future_map2(.x = gs_symbol_collection,
+                                               .y = names(gs_symbol_collection),
+                                               .f = function(geneset, geneset_name)
+                                                 gsea_function(geneset=geneset,
+                                                               geneset_name=geneset_name,
+                                                               ranked_list=rnk_lists$KO1_vs_WT),
+                                               .options = furrr_map_options,
+                                               .progress = FALSE) 
+  
+  KO2_vs_WT_gsea_results <- furrr::future_map2(.x = gs_symbol_collection,
+                                               .y = names(gs_symbol_collection),
+                                               .f = function(geneset, geneset_name)
+                                                 gsea_function(geneset=geneset,
+                                                               geneset_name=geneset_name,
+                                                               ranked_list=rnk_lists$KO2_vs_WT),
+                                               .options = furrr_map_options,
+                                               .progress = FALSE) 
+  
+  plan(sequential, .cleanup = TRUE)
+  
+  
+  # packing results and saving
+  gsea_results <- list(KO1_vs_CTL_gsea_results = KO1_vs_CTL_gsea_results,
+                        KO2_vs_CTL_gsea_results = KO2_vs_CTL_gsea_results,
+                        KO1_vs_WT_gsea_results = KO1_vs_WT_gsea_results,
+                        KO2_vs_WT_gsea_results = KO2_vs_WT_gsea_results)
+
+  save_rds(x = gsea_results,
+           rdsname = file.path(results_dir, "them6_gsea_results.rds"), 
+           digestname = file.path(results_dir, "them6_gsea_results_digest.md5"))
+     
+
+} else {
+  message("GSEA results available...loading!")
+  # md5_digest them6_gsea_results.rds: 707217f5b76a5db6a36526ac6fce78c9
+  gsea_results <- readRDS(file.path(results_dir, "them6_gsea_results.rds")) 
+  message("Correct data file loaded: ", digest_match(x = gsea_results, digestfile = file.path(results_dir, "them6_gsea_results_digest.md5")))
+  # check if correct data is loaded in case of missing _digest.md5
+  if (digest::digest(gsea_results, algo = "md5") != "707217f5b76a5db6a36526ac6fce78c9") {
+    warning("gsea_results md5 is: ", digest::digest(gsea_results, algo = "md5"), " and it differs from expected: 707217f5b76a5db6a36526ac6fce78c9")
+  }
+  
+  KO1_vs_CTL_gsea_results <- gsea_results[["KO1_vs_CTL_gsea_results"]]
+  KO2_vs_CTL_gsea_results <- gsea_results[["KO2_vs_CTL_gsea_results"]]
+  KO1_vs_WT_gsea_results <- gsea_results[["KO1_vs_WT_gsea_results"]]
+  KO2_vs_WT_gsea_results <- gsea_results[["KO2_vs_WT_gsea_results"]]
+
+}
+
+# converting gseaResult to data.frames ----
+KO1_vs_CTL_gsea_results_df <- map(KO1_vs_CTL_gsea_results, as.data.frame) %>% setNames(names(KO1_vs_CTL_gsea_results))
+KO2_vs_CTL_gsea_results_df <- map(KO2_vs_CTL_gsea_results, as.data.frame) %>% setNames(names(KO2_vs_CTL_gsea_results))
+KO1_vs_WT_gsea_results_df <- map(KO1_vs_WT_gsea_results, as.data.frame) %>% setNames(names(KO1_vs_WT_gsea_results))
+KO2_vs_WT_gsea_results_df <- map(KO2_vs_WT_gsea_results, as.data.frame) %>% setNames(names(KO2_vs_WT_gsea_results))
+
+# saving data.frames as results ----
+openxlsx::write.xlsx(KO1_vs_CTL_gsea_results_df, file = file.path(results_dir, "KO1_vs_CTL_gsea.xlsx")) 
+openxlsx::write.xlsx(KO2_vs_CTL_gsea_results_df, file = file.path(results_dir, "KO2_vs_CTL_gsea.xlsx")) 
+openxlsx::write.xlsx(KO1_vs_WT_gsea_results_df, file = file.path(results_dir, "KO1_vs_WT_gsea.xlsx")) 
+openxlsx::write.xlsx(KO2_vs_WT_gsea_results_df, file = file.path(results_dir, "KO2_vs_WT_gsea.xlsx")) 
+```
+
+```{r Running GSEA on LIPID/STEROL genesets, include=FALSE, eval=TRUE}
+# lipid metabolism ----
+# GOBP LIPID and GOBP STEROL
+gs_C5_GOBP_LIPID <- gs_C5_GOBP %>%
+  dplyr::filter(grepl(pattern = "LIPID", x = gs_name))
+
+gs_C5_GOBP_STEROL <- gs_C5_GOBP %>%
+  dplyr::filter(grepl(pattern = "STEROL", x = gs_name))
+
+gs_symbol_collection_LIPID_STEROL <- list(LIPID = gs_C5_GOBP_LIPID,
+                             STEROL = gs_C5_GOBP_STEROL)
+
+# running GSEA analysis ----
+if (!file.exists(file.path(results_dir, "them6_gsea_lipids_results.rds"))) {
+  
+  furrr_map_options <- furrr_options(seed = 123)
+  if(nthreads > 1) {plan(multisession, workers = nthreads)} else {plan(sequential)} 
+  
+  KO1_vs_CTL_gsea_LIPIDS_results <- furrr::future_map2(.x = gs_symbol_collection_LIPID_STEROL,
+                                                       .y = names(gs_symbol_collection_LIPID_STEROL),
+                                                       .f = function(geneset, geneset_name)
+                                                         gsea_function(geneset=geneset,
+                                                                       geneset_name=geneset_name,
+                                                                       ranked_list=rnk_lists$KO1_vs_CTL),
+                                                       .options = furrr_map_options,
+                                                       .progress = FALSE) 
+  
+  KO2_vs_CTL_gsea_LIPIDS_results <- furrr::future_map2(.x = gs_symbol_collection_LIPID_STEROL,
+                                                       .y = names(gs_symbol_collection_LIPID_STEROL),
+                                                       .f = function(geneset, geneset_name)
+                                                         gsea_function(geneset=geneset,
+                                                                       geneset_name=geneset_name,
+                                                                       ranked_list=rnk_lists$KO2_vs_CTL),
+                                                       .options = furrr_map_options,
+                                                       .progress = FALSE) 
+  
+  KO1_vs_WT_gsea_LIPIDS_results <- furrr::future_map2(.x = gs_symbol_collection_LIPID_STEROL,
+                                                      .y = names(gs_symbol_collection_LIPID_STEROL),
+                                                      .f = function(geneset, geneset_name)
+                                                        gsea_function(geneset=geneset,
+                                                                      geneset_name=geneset_name,
+                                                                      ranked_list=rnk_lists$KO1_vs_WT),
+                                                      .options = furrr_map_options,
+                                                      .progress = FALSE) 
+  
+  KO2_vs_WT_gsea_LIPIDS_results <- furrr::future_map2(.x = gs_symbol_collection_LIPID_STEROL,
+                                                      .y = names(gs_symbol_collection_LIPID_STEROL),
+                                                      .f = function(geneset, geneset_name)
+                                                        gsea_function(geneset=geneset,
+                                                                      geneset_name=geneset_name,
+                                                                      ranked_list=rnk_lists$KO2_vs_WT),
+                                                      .options = furrr_map_options,
+                                                      .progress = FALSE) 
+  
+  plan(sequential, .cleanup = TRUE)
+  
+    # packing results and saving
+  gsea_lipid_results <- list(KO1_vs_CTL_gsea_LIPIDS_results = KO1_vs_CTL_gsea_LIPIDS_results,
+                             KO2_vs_CTL_gsea_LIPIDS_results = KO2_vs_CTL_gsea_LIPIDS_results,
+                             KO1_vs_WT_gsea_LIPIDS_results = KO1_vs_WT_gsea_LIPIDS_results,
+                             KO2_vs_WT_gsea_LIPIDS_results = KO2_vs_WT_gsea_LIPIDS_results)
+
+  save_rds(x = gsea_lipid_results,
+           rdsname = file.path(results_dir, "them6_gsea_lipids_results.rds"), 
+           digestname = file.path(results_dir, "them6_gsea_lipids_results_digest.md5"))
+     
+} else {
+  message("GSEA results available...loading!")
+  # md5_digest them6_gsea_lipids_results.rds: a71b7c35fddb1442dfbfabbfd77d1105
+  gsea_lipid_results <- readRDS(file.path(results_dir, "them6_gsea_lipids_results.rds")) 
+  message("Correct data file loaded: ", digest_match(x = gsea_lipid_results, digestfile = file.path(results_dir, "them6_gsea_lipids_results_digest.md5")))
+  # check if correct data is loaded in case of missing _digest.md5
+  if (digest::digest(gsea_lipid_results, algo = "md5") != "a71b7c35fddb1442dfbfabbfd77d1105") {
+    warning("gsea_lipid_results md5 is: ", digest::digest(gsea_lipid_results, algo = "md5"), " and it differs from expected: a71b7c35fddb1442dfbfabbfd77d1105")
+  }
+  
+  KO1_vs_CTL_gsea_LIPIDS_results <- gsea_lipid_results[["KO1_vs_CTL_gsea_LIPIDS_results"]]
+  KO2_vs_CTL_gsea_LIPIDS_results <- gsea_lipid_results[["KO2_vs_CTL_gsea_LIPIDS_results"]]
+  KO1_vs_WT_gsea_LIPIDS_results <- gsea_lipid_results[["KO1_vs_WT_gsea_LIPIDS_results"]]
+  KO2_vs_WT_gsea_LIPIDS_results <- gsea_lipid_results[["KO2_vs_WT_gsea_LIPIDS_results"]]
+}
+
+# converting gseaResult to data.frames ----
+KO1_vs_CTL_gsea_LIPIDS_results_df <- map(KO1_vs_CTL_gsea_LIPIDS_results, as.data.frame) %>% setNames(names(KO1_vs_CTL_gsea_LIPIDS_results))
+KO2_vs_CTL_gsea_LIPIDS_results_df <- map(KO2_vs_CTL_gsea_LIPIDS_results, as.data.frame) %>% setNames(names(KO2_vs_CTL_gsea_LIPIDS_results))
+KO1_vs_WT_gsea_LIPIDS_results_df <- map(KO1_vs_WT_gsea_LIPIDS_results, as.data.frame) %>% setNames(names(KO1_vs_WT_gsea_LIPIDS_results))
+KO2_vs_WT_gsea_LIPIDS_results_df <- map(KO2_vs_WT_gsea_LIPIDS_results, as.data.frame) %>% setNames(names(KO2_vs_WT_gsea_LIPIDS_results))
+
+# saving data.frames as results ----
+openxlsx::write.xlsx(KO1_vs_CTL_gsea_LIPIDS_results_df, file = file.path(results_dir, "KO1_vs_CTL_gsea_LIPIDS.xlsx")) 
+openxlsx::write.xlsx(KO2_vs_CTL_gsea_LIPIDS_results_df, file = file.path(results_dir, "KO2_vs_CTL_gsea_LIPIDS.xlsx")) 
+openxlsx::write.xlsx(KO1_vs_WT_gsea_LIPIDS_results_df, file = file.path(results_dir, "KO1_vs_WT_gsea_LIPIDS.xlsx")) 
+openxlsx::write.xlsx(KO2_vs_WT_gsea_LIPIDS_results_df, file = file.path(results_dir, "KO2_vs_WT_gsea_LIPIDS.xlsx")) 
+
+```
+
+# GSEA results {.tabset}
+
+Results are generated in the results_dir. This folder contains complete results saved as .RData/.xlsx files and figures saved as .tiff. 
+
+```{r GSEA results plots, include=FALSE, eval=TRUE}
+# plotting GSEA plots for 
+
+# KO1_vs_CTL_gsea_LIPIDS_results_df
+# # LIPID:
+# GOBP_REGULATION_OF_LIPID_METABOLIC_PROCESS
+# GOBP_REGULATION_OF_LIPID_BIOSYNTHETIC_PROCESS
+# GOBP_LIPID_HOMEOSTASIS
+# STEROL:
+# GOBP_STEROL_HOMEOSTASIS
+# GOBP_REGULATION_OF_CHOLESTEROL_METABOLIC_PROCESS
+# 
+# KO2_vs_CTL_gsea_LIPIDS_results_df
+# LIPID:
+# GOBP_REGULATION_OF_LIPID_METABOLIC_PROCESS
+# GOBP_REGULATION_OF_LIPID_BIOSYNTHETIC_PROCESS
+# STEROL:
+# GOBP_STEROL_HOMEOSTASIS
+
+# individual plots ----
+
+# genesets of interest
+lipid_genesets <- c("GOBP_REGULATION_OF_LIPID_METABOLIC_PROCESS", "GOBP_REGULATION_OF_LIPID_BIOSYNTHETIC_PROCESS", "GOBP_LIPID_HOMEOSTASIS")
+KO1_vs_CTL_sterol_genesets <- c("GOBP_STEROL_HOMEOSTASIS", "GOBP_REGULATION_OF_CHOLESTEROL_METABOLIC_PROCESS")
+KO2_vs_CTL_sterol_genesets <- c("GOBP_STEROL_HOMEOSTASIS")
+
+# KO1_vs_CTL_gsea_LIPIDS_results
+KO1_vs_CTL_LIPID_gseaplots <- purrr::map(.x = lipid_genesets, .f = function(geneset_id){
+  gseaPlotESprofile(KO1_vs_CTL_gsea_LIPIDS_results$LIPID, geneSetID = geneset_id, ES_geom="line", NES_table = FALSE, remove_substring = NULL, title = "")
+}) %>% setNames(lipid_genesets)
+
+KO1_vs_CTL_STEROL_gseaplots <- purrr::map(.x = KO1_vs_CTL_sterol_genesets, .f = function(geneset_id){
+  gseaPlotESprofile(KO1_vs_CTL_gsea_LIPIDS_results$STEROL, geneSetID = geneset_id, ES_geom="line", NES_table = FALSE, remove_substring = NULL, title = "")
+}) %>% setNames(KO1_vs_CTL_sterol_genesets)
+
+
+# KO2_vs_CTL_gsea_LIPIDS_results
+KO2_vs_CTL_LIPID_gseaplots <- purrr::map(.x = lipid_genesets, .f = function(geneset_id){
+  gseaPlotESprofile(KO2_vs_CTL_gsea_LIPIDS_results$LIPID, geneSetID = geneset_id, ES_geom="line", NES_table = FALSE, remove_substring = NULL, title = "")
+}) %>% setNames(lipid_genesets)
+
+KO2_vs_CTL_STEROL_gseaplots <- purrr::map(.x = KO2_vs_CTL_sterol_genesets, .f = function(geneset_id){
+  gseaPlotESprofile(KO2_vs_CTL_gsea_LIPIDS_results$STEROL, geneSetID = geneset_id, ES_geom="line", NES_table = FALSE, remove_substring = NULL, title = "")
+}) %>% setNames(KO2_vs_CTL_sterol_genesets)
+
+
+# saving ggplots ----
+# save in a loop
+# KO1_vs_CTL_gsea_LIPIDS_results
+purrr::map2(.x = names(KO1_vs_CTL_LIPID_gseaplots), .y = "KO1_vs_CTL_LIPID", .f = function(gsea_plot_name, data_name){
+  gsea_plot <- KO1_vs_CTL_LIPID_gseaplots[[gsea_plot_name]]
+
+  #ggsave(filename = file.path(results_dir, paste0(data_name,"_", gsea_plot_name,".tiff")), gsea_plot, height = 20, width = 20, units = "cm")
+  ggsave(filename = file.path(results_dir, paste0(data_name,"_", gsea_plot_name,".tiff")), gsea_plot)
+})
+
+purrr::map2(.x = names(KO1_vs_CTL_STEROL_gseaplots), .y = "KO1_vs_CTL_STEROL", .f = function(gsea_plot_name, data_name){
+  gsea_plot <- KO1_vs_CTL_STEROL_gseaplots[[gsea_plot_name]]
+
+  ggsave(filename = file.path(results_dir, paste0(data_name,"_", gsea_plot_name,".tiff")), gsea_plot)
+})
+
+# KO2_vs_CTL
+purrr::map2(.x = names(KO2_vs_CTL_LIPID_gseaplots), .y = "KO2_vs_CTL_LIPID", .f = function(gsea_plot_name, data_name){
+  gsea_plot <- KO2_vs_CTL_LIPID_gseaplots[[gsea_plot_name]]
+
+  #ggsave(filename = file.path(results_dir, paste0(data_name,"_", gsea_plot_name,".tiff")), gsea_plot, height = 20, width = 20, units = "cm")
+  ggsave(filename = file.path(results_dir, paste0(data_name,"_", gsea_plot_name,".tiff")), gsea_plot)
+})
+
+purrr::map2(.x = names(KO2_vs_CTL_STEROL_gseaplots), .y = "KO2_vs_CTL_STEROL", .f = function(gsea_plot_name, data_name){
+  gsea_plot <- KO2_vs_CTL_STEROL_gseaplots[[gsea_plot_name]]
+
+  ggsave(filename = file.path(results_dir, paste0(data_name,"_", gsea_plot_name,".tiff")), gsea_plot)
+})
+
+```
+
+## KO1_vs_CTL
+
+Lipid genesets:
+
+```{r KO1_vs_CTL - LIPIDS GSEA results, include=TRUE, eval=TRUE, warning=FALSE}
+DT::datatable(dplyr::select(KO1_vs_CTL_gsea_LIPIDS_results_df$LIPID, c("ID", "enrichmentScore", "NES", "pvalue", "p.adjust")) %>% dplyr::arrange(., pvalue),
+              rownames = FALSE,
+              options = list(pageLength = 10),
+              caption = 'Table 1: KO1_vs_CTL - LIPIDS GSEA results.') %>%
+  DT::formatRound(c('enrichmentScore', 'NES'), 2) %>%
+  DT::formatRound(c('pvalue', 'p.adjust'), 4)
+```
+
+```{r KO1_vs_CTL - GOBP_REGULATION_OF_LIPID_METABOLIC_PROCESS,fig.cap = "KO1_vs_CTL: GOBP_REGULATION_OF_LIPID_METABOLIC_PROCESS"}
+
+print(KO1_vs_CTL_LIPID_gseaplots$GOBP_REGULATION_OF_LIPID_METABOLIC_PROCESS)
+```
+
+```{r KO1_vs_CTL - GOBP_REGULATION_OF_LIPID_BIOSYNTHETIC_PROCESS,fig.cap = "KO1_vs_CTL: GOBP_REGULATION_OF_LIPID_BIOSYNTHETIC_PROCESS"}
+
+print(KO1_vs_CTL_LIPID_gseaplots$GOBP_REGULATION_OF_LIPID_BIOSYNTHETIC_PROCESS)
+```
+
+
+```{r KO1_vs_CTL - GOBP_LIPID_HOMEOSTASIS,fig.cap = "KO1_vs_CTL: GOBP_LIPID_HOMEOSTASIS"}
+
+print(KO1_vs_CTL_LIPID_gseaplots$GOBP_LIPID_HOMEOSTASIS)
+```
+
+Sterol genesets:
+
+```{r KO1_vs_CTL - STEROLS GSEA results, include=TRUE, eval=TRUE, warning=FALSE}
+DT::datatable(dplyr::select(KO1_vs_CTL_gsea_LIPIDS_results_df$STEROL, c("ID", "enrichmentScore", "NES", "pvalue", "p.adjust")) %>% dplyr::arrange(., pvalue),
+              rownames = FALSE,
+              options = list(pageLength = 10),
+              caption = 'Table 1: KO1_vs_CTL - STEROLS GSEA results.') %>%
+  DT::formatRound(c('enrichmentScore', 'NES'), 2) %>%
+  DT::formatRound(c('pvalue', 'p.adjust'), 4)
+```
+
+```{r KO1_vs_CTL - GOBP_STEROL_HOMEOSTASIS,fig.cap = "KO1_vs_CTL: GOBP_STEROL_HOMEOSTASIS"}
+
+print(KO1_vs_CTL_STEROL_gseaplots$GOBP_STEROL_HOMEOSTASIS)
+```
+
+```{r KO1_vs_CTL - GOBP_REGULATION_OF_CHOLESTEROL_METABOLIC_PROCESS,fig.cap = "KO1_vs_CTL: GOBP_REGULATION_OF_CHOLESTEROL_METABOLIC_PROCESS"}
+
+print(KO1_vs_CTL_STEROL_gseaplots$GOBP_REGULATION_OF_CHOLESTEROL_METABOLIC_PROCESS)
+```
+
+## KO2_vs_CTL
+
+Lipid genesets:
+
+```{r KO2_vs_CTL - LIPIDS GSEA results, include=TRUE, eval=TRUE, warning=FALSE}
+DT::datatable(dplyr::select(KO2_vs_CTL_gsea_LIPIDS_results_df$LIPID, c("ID", "enrichmentScore", "NES", "pvalue", "p.adjust")) %>% dplyr::arrange(., pvalue),
+              rownames = FALSE,
+              options = list(pageLength = 10),
+              caption = 'Table 1: KO2_vs_CTL - LIPIDS GSEA results.') %>%
+  DT::formatRound(c('enrichmentScore', 'NES'), 2) %>%
+  DT::formatRound(c('pvalue', 'p.adjust'), 4)
+```
+
+```{r KO2_vs_CTL - GOBP_REGULATION_OF_LIPID_METABOLIC_PROCESS,fig.cap = "KO2_vs_CTL: GOBP_REGULATION_OF_LIPID_METABOLIC_PROCESS"}
+
+print(KO2_vs_CTL_LIPID_gseaplots$GOBP_REGULATION_OF_LIPID_METABOLIC_PROCESS)
+```
+
+```{r KO2_vs_CTL - GOBP_REGULATION_OF_LIPID_BIOSYNTHETIC_PROCESS,fig.cap = "KO2_vs_CTL: GOBP_REGULATION_OF_LIPID_BIOSYNTHETIC_PROCESS"}
+
+print(KO2_vs_CTL_LIPID_gseaplots$GOBP_REGULATION_OF_LIPID_BIOSYNTHETIC_PROCESS)
+```
+
+```{r KO2_vs_CTL - GOBP_LIPID_HOMEOSTASIS,fig.cap = "KO2_vs_CTL: GOBP_LIPID_HOMEOSTASIS"}
+
+print(KO2_vs_CTL_LIPID_gseaplots$GOBP_LIPID_HOMEOSTASIS)
+```
+
+Sterol genesets:
+
+```{r KO2_vs_CTL - STEROLS GSEA results, include=TRUE, eval=TRUE, warning=FALSE}
+DT::datatable(dplyr::select(KO2_vs_CTL_gsea_LIPIDS_results_df$STEROL, c("ID", "enrichmentScore", "NES", "pvalue", "p.adjust")) %>% dplyr::arrange(., pvalue),
+              rownames = FALSE,
+              options = list(pageLength = 10),
+              caption = 'Table 1: KO2_vs_CTL - STEROLS GSEA results.') %>%
+  DT::formatRound(c('enrichmentScore', 'NES'), 2) %>%
+  DT::formatRound(c('pvalue', 'p.adjust'), 4)
+```
+
+```{r KO2_vs_CTL - GOBP_STEROL_HOMEOSTASIS,fig.cap = "KO2_vs_CTL: GOBP_STEROL_HOMEOSTASIS"}
+
+print(KO2_vs_CTL_STEROL_gseaplots$GOBP_STEROL_HOMEOSTASIS)
+```
+
+
+```{r GSEA results plots - combined, include=FALSE, eval=FALSE}
+# combined plots ----
+# KO1_vs_CTL_gsea_LIPIDS_results
+KO1_vs_CTL_LIPID_comb_gseaplot <- gseaPlotESprofile(KO1_vs_CTL_gsea_LIPIDS_results$LIPID, geneSetID = c("GOBP_REGULATION_OF_LIPID_METABOLIC_PROCESS", "GOBP_REGULATION_OF_LIPID_BIOSYNTHETIC_PROCESS", "GOBP_LIPID_HOMEOSTASIS"), ES_geom="line", NES_table = TRUE, remove_substring = "GOBP_", title = "")
+
+KO1_vs_CTL_STEROL_comb_gseaplot <- gseaPlotESprofile(KO1_vs_CTL_gsea_LIPIDS_results$STEROL, geneSetID = c("GOBP_STEROL_HOMEOSTASIS", "GOBP_REGULATION_OF_CHOLESTEROL_METABOLIC_PROCESS"), ES_geom="line", NES_table = TRUE, remove_substring = "GOBP_", title = "")
+
+# KO2_vs_CTL_gsea_LIPIDS_results
+KO2_vs_CTL_LIPID_comb_gseaplot <- gseaPlotESprofile(KO2_vs_CTL_gsea_LIPIDS_results$LIPID, geneSetID = c("GOBP_REGULATION_OF_LIPID_METABOLIC_PROCESS", "GOBP_REGULATION_OF_LIPID_BIOSYNTHETIC_PROCESS"), ES_geom="line", NES_table = TRUE, remove_substring = "GOBP_", title = "")
+
+KO2_vs_CTL_STEROL_comb_gseaplot <- gseaPlotESprofile(KO2_vs_CTL_gsea_LIPIDS_results$STEROL, geneSetID = c("GOBP_STEROL_HOMEOSTASIS"), ES_geom="line", NES_table = TRUE, remove_substring = "GOBP_", title = "")
+
+# saving combined plots
+ggsave(filename = file.path(results_dir, paste0("KO1_vs_CTL_LIPID_comb_gseaplot.tiff")), KO1_vs_CTL_LIPID_comb_gseaplot,
+       height = 25, width = 25, units = "cm")
+ggsave(filename = file.path(results_dir, paste0("KO1_vs_CTL_STEROL_comb_gseaplot.tiff")), KO1_vs_CTL_STEROL_comb_gseaplot,
+       height = 25, width = 25, units = "cm")
+ggsave(filename = file.path(results_dir, paste0("KO2_vs_CTL_LIPID_comb_gseaplot.tiff")), KO2_vs_CTL_LIPID_comb_gseaplot,
+       height = 25, width = 25, units = "cm")
+ggsave(filename = file.path(results_dir, paste0("KO2_vs_CTL_STEROL_comb_gseaplot.tiff")), KO2_vs_CTL_STEROL_comb_gseaplot,
+       height = 25, width = 25, units = "cm")
+```
+
+# sessionInfo
+```{r include=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+sessionInfo()
+
+# saving session info
+writeLines(capture.output(sessionInfo()), file.path(results_dir, "sessionInfo_them6_gsea.txt"))
+
+renv::snapshot(lockfile = file.path(base_dir, "them6_gsea_renv.lock"))
+renv::status(lockfile = file.path(base_dir, "them6_gsea_renv.lock"))
+# renv::diagnostics()
+```

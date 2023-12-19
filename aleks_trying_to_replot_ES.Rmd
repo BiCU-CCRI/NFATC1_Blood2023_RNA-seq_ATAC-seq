@@ -1,0 +1,594 @@
+This script is created by Aleksandr B. for Sevgi for re-plotting some data. 
+
+2023-04-17
+
+This is an assembly from a P. R. code and THEM6_gsea code.
+
+I added the renv.lock that works exactly for this script. For some other scripst maybe it needs to be replaced.
+Some code might be redundant.
+
+
+```{r analysis_parameters, include=FALSE}
+# Specifying parameters here ----
+#  only this part should change
+#  in the next chunks there are some basic assumptions about directory structure
+# RAW_DATA_DIR <- file.path(base_dir, "data/raw_data/")  #  directory to store raw files
+# PROCESSED_DATA_DIR <- file.path(base_dir, "data/processed_data/")  #  directory to store processed files
+# RESULTS_DIR <- file.path(base_dir, "results/")  # directory with figures, excel, report,...
+# CACHE_DIR <- file.path(base_dir, "cache/")  #  directory to cached files - e.g. from BiomartR, knitr etc.
+
+# loading project-specific parameters
+# in not interactive way!
+#install.packages("import")
+if(!("import" %in% installed.packages())){install.packages("import")}
+if(!("renv" %in% installed.packages())){remotes::install_github("rstudio/renv")}
+
+import::from(yaml, read_yaml)
+import::from(knitr, opts_chunk)
+
+
+base_dir <- "/home/rstudio/workspace/"  # SPECIFY
+data_dir <- file.path(base_dir, "datasets") 
+results_dir <- file.path(base_dir, "results_dir") 
+
+# loading config file ----
+config_file <- file.path(base_dir, "sevgi_config.yaml")
+config <- read_yaml(config_file)
+#config <- yaml::read_yaml(params$config_file)
+
+#project setup
+project_name <- config$project_name
+nthreads <- 4  # for furrr multisession
+
+```
+
+```{r "functions"}
+
+#These are native, non edited functions. They are used to produce the plots as they were produced by P.R.
+
+create_log2FC_rnk_list <- function(de_results_df=NULL,
+                                   gene_name_column=NULL,
+                                   log2FC_column=NULL,
+                                   padj_column=NULL){
+  import::here("%>%", .from = magrittr)
+  import::here(select, filter, rename, arrange, desc, group_by, summarise, ungroup, .from = dplyr)
+  
+  gene_name_column <- as.name(gene_name_column)
+  log2FC_column <- as.name(log2FC_column)
+  padj_column <- as.name(padj_column)
+  
+  
+  # filtering of de_results_df
+  clean_data <- de_results_df %>%
+    rename(gene_symbol = {{ gene_name_column }},
+           log2FC = {{ log2FC_column }},
+           padj = {{ padj_column }}) %>%
+    filter(!is.na(padj)) %>%  # removing NA padj (DESeq filter for lowly/noise expressed genes)
+    filter(!is.na(gene_symbol)) %>%  # removing NA gene symbols
+    select(gene_symbol, log2FC) %>%
+    group_by(gene_symbol) %>%
+    summarise(log2FC = log2FC[abs(log2FC) == max(abs(log2FC))]) %>%  # duplicated gene_symbols keep one with max(abs(log2FC))
+    #filter(!duplicated(gene_symbol)) %>%  # removing duplicated gene_symbols; randomly keeping one (check log2FC values!)
+    ungroup() %>%
+    arrange(desc(log2FC)) 
+  
+  # creating ranked list
+  rnk_list <- clean_data$log2FC
+  names(rnk_list) <- clean_data$gene_symbol
+    
+  return(rnk_list)
+}
+
+
+gsea_function <- function(geneset=NULL, geneset_name=NULL, ranked_list=NULL, ncores=6){
+  import::here(SnowParam, .from = BiocParallel)
+  import::here(GSEA, .from = clusterProfiler)
+  # added geneset_name mainly for debugging and printing in log
+  # pvalueCutoff = 1, no filtering at this stage
+  # For some pathways, in reality P-values are less than 1e-10. You can set the `eps` argument to zero for better estimation.
+  # consider eps = 0
+  message("...enriching: ", geneset_name)
+  GSEA(geneList = ranked_list,
+       TERM2GENE = geneset,
+       minGSSize = 10,
+       maxGSSize = 500,
+       pvalueCutoff = 1,
+       seed = 123,
+       verbose = TRUE,
+       by = "fgsea",
+       BPPARAM=SnowParam(workers = ncores),
+       eps = 0,
+       nPermSimple = 100000)
+}
+
+gseaPlotESprofile <- function (x, geneSetID, title = "", color = "green", base_size = 11, 
+                         rel_heights = c(1.5, 0.5, 1), subplots = 1:3, ES_geom = "line",
+                         pvalue_table = FALSE, 
+                         NES_table = FALSE,
+                         remove_substring = NULL) {
+  # function based on enrichplot::gseaplot2 [all credit goes to the original author]
+  #  - adding option for NES_table that contains NES, pval, padj
+  #  - added horizontal dashed line at yintercept = 0 for running ES
+  #  - remove_substring = option to shorted geneset name(s) by fixed strink e.g. HALLMARK_ 
+  
+  # require(RColorBrewer) # brewer.pal
+  # require(ggplot2)
+  import::here(brewer.pal, .from = RColorBrewer)
+  import::here(ggplot2)
+  import::here(str_wrap, str_replace_all, .from = stringr)
+  import::here(plot_grid, .from=cowplot)
+  
+  ES_geom <- match.arg(ES_geom, c("line", "dot"))
+  geneList <- position <- NULL
+  if (length(geneSetID) == 1) {
+    gsdata <- gsInfo(x, geneSetID)
+    
+    # cleaning and wrapping long strings
+    #gsdata$Description <- stringr::str_wrap(stringr::str_replace_all(gsdata$Description, pattern = "_", replacement = " "), width=20)
+  }
+  else {
+    gsdata <- do.call(rbind, lapply(geneSetID, gsInfo, object = x))
+  }
+  p <- ggplot(gsdata, aes_(x = ~x)) + xlab(NULL) + theme_classic(base_size) + 
+    theme(panel.grid.major = element_line(colour = "grey92"), 
+          panel.grid.minor = element_line(colour = "grey92"), 
+          panel.grid.major.y = element_blank(), panel.grid.minor.y = element_blank()) + 
+    scale_x_continuous(expand = c(0, 0))
+  if (ES_geom == "line") {
+    es_layer <- geom_line(aes_(y = ~runningScore, color = ~Description), 
+                          size = 1)
+  }
+  else {
+    es_layer <- geom_point(aes_(y = ~runningScore, color = ~Description), 
+                           size = 1, data = subset(gsdata, position == 1))
+  }
+  p.res <- p + es_layer + theme(legend.position = c(0.8, 0.8), 
+                                legend.title = element_blank(), legend.background = element_rect(fill = "transparent"))
+  p.res <- p.res + ylab("Running Enrichment Score") + theme(axis.text.x = element_blank(), 
+                                                            axis.ticks.x = element_blank(), axis.line.x = element_blank(), 
+                                                            plot.margin = margin(t = 0.2, r = 0.2, b = 0, l = 0.2, 
+                                                                                 unit = "cm"))
+  # adding horizontal line to distinguish between neg and pos running enrichment scores
+  p.res <- p.res + geom_hline(yintercept = 0, color="grey", linetype = "dashed")
+  
+  i <- 0
+  for (term in unique(gsdata$Description)) {
+    idx <- which(gsdata$ymin != 0 & gsdata$Description == 
+                   term)
+    gsdata[idx, "ymin"] <- i
+    gsdata[idx, "ymax"] <- i + 1
+    i <- i + 1
+  }
+  p2 <- ggplot(gsdata, aes_(x = ~x)) + geom_linerange(aes_(ymin = ~ymin, 
+                                                           ymax = ~ymax, color = ~Description)) + xlab(NULL) + ylab(NULL) + 
+    theme_classic(base_size) + theme(legend.position = "none", 
+                                     plot.margin = margin(t = -0.1, b = 0, unit = "cm"), axis.ticks = element_blank(), 
+                                     axis.text = element_blank(), axis.line.x = element_blank()) + 
+    scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0))
+  if (length(geneSetID) == 1) {
+    v <- seq(1, sum(gsdata$position), length.out = 9)
+    inv <- findInterval(rev(cumsum(gsdata$position)), v)
+    if (min(inv) == 0) 
+      inv <- inv + 1
+    col = c(rev(brewer.pal(5, "Blues")), brewer.pal(5, "Reds"))
+    ymin <- min(p2$data$ymin)
+    yy <- max(p2$data$ymax - p2$data$ymin) * 0.3
+    xmin <- which(!duplicated(inv))
+    xmax <- xmin + as.numeric(table(inv)[unique(inv)])
+    d <- data.frame(ymin = ymin, ymax = yy, xmin = xmin, 
+                    xmax = xmax, col = col[unique(inv)])
+    p2 <- p2 + geom_rect(aes_(xmin = ~xmin, xmax = ~xmax, 
+                              ymin = ~ymin, ymax = ~ymax, fill = ~I(col)), data = d, 
+                         alpha = 0.9, inherit.aes = FALSE)
+  }
+  df2 <- p$data
+  df2$y <- p$data$geneList[df2$x]
+  p.pos <- p + geom_segment(data = df2, aes_(x = ~x, xend = ~x, 
+                                             y = ~y, yend = 0), color = "grey")
+  p.pos <- p.pos + ylab("Ranked list metric") + xlab("Rank in Ordered Dataset") + 
+    theme(plot.margin = margin(t = -0.1, r = 0.2, b = 0.2, 
+                               l = 0.2, unit = "cm"))
+  if (!is.null(title) && !is.na(title) && title != "") 
+    p.res <- p.res + ggtitle(title)
+  if (length(color) == length(geneSetID)) {
+    p.res <- p.res + scale_color_manual(values = color)
+    if (length(color) == 1) {
+      p.res <- p.res + theme(legend.position = "none")
+      p2 <- p2 + scale_color_manual(values = "black")
+    }
+    else {
+      p2 <- p2 + scale_color_manual(values = color)
+    }
+  }
+  if (pvalue_table) {
+    pd <- x[geneSetID, c("Description", "pvalue", "p.adjust")]
+    names(pd) <- c("Description", "NES", "pval", "padj")
+    pd <- pd[order(pd[, 1], decreasing = FALSE), ]
+    rownames(pd) <- pd$Description
+    pd <- pd[, -1]
+    pd <- round(pd, 4)
+    tp <- tableGrob2(pd, p.res)
+    p.res <- p.res + theme(legend.position = "none") + 
+      annotation_custom(tp, xmin = quantile(p.res$data$x, 0.5), 
+                        xmax = quantile(p.res$data$x, 0.95), 
+                        ymin = quantile(p.res$data$runningScore, 0.75), 
+                        ymax = quantile(p.res$data$runningScore, 0.9))
+  }
+  
+  if (NES_table) {
+    pd <- x[geneSetID, c("Description", "NES", "pvalue", "p.adjust")]
+    names(pd) <- c("Description", "NES", "pval", "padj")
+    pd <- pd[order(pd[, 1], decreasing = FALSE), ]
+    # adjust length of geneset names
+    # make it dynamic
+    # hardcoded removal of hallmark in string
+    if (!is.null(remove_substring)) {
+      #pd$Description <- gsub(pattern = "HALLMARK_", replacement = "", pd$Description) 
+      pd$Description <- gsub(pattern = remove_substring, replacement = "", pd$Description) 
+    }
+    rownames(pd) <- str_wrap(str_replace_all(pd$Description, pattern = "_", replacement = " "), width=30) # original: pd$Description
+
+    pd <- pd[, -1]
+    #pd <- round(pd, 4)
+    pd$NES <- round(pd$NES, 2)
+    pd$pval <- round(pd$pval, 4)
+    pd$padj <- round(pd$padj, 4)
+    tp <- tableGrob2(pd, p.res)
+
+    p.res <- p.res + theme(legend.position = "none") +
+      annotation_custom(tp,
+                        xmin = quantile(p.res$data$x, 0.5),
+                        xmax = quantile(p.res$data$x, 0.95),
+                        ymin = quantile(p.res$data$runningScore, 0.75),
+                        ymax = quantile(p.res$data$runningScore, 0.9))
+  
+  }
+  
+  plotlist <- list(p.res, p2, p.pos)[subplots]
+  n <- length(plotlist)
+  plotlist[[n]] <- plotlist[[n]] + theme(axis.line.x = element_line(), 
+                                         axis.ticks.x = element_line(), axis.text.x = element_text())
+  if (length(subplots) == 1) 
+    return(plotlist[[1]] + theme(plot.margin = margin(t = 0.2, 
+                                                      r = 0.2, b = 0.2, l = 0.2, unit = "cm")))
+  if (length(rel_heights) > length(subplots)) 
+    rel_heights <- rel_heights[subplots]
+    plot_grid(plotlist = plotlist, ncol = 1, align = "v", rel_heights = rel_heights)
+}
+
+tableGrob2 <- function(d, p = NULL) {
+  d <- d[order(rownames(d)),]
+  tp <- gridExtra::tableGrob(d) # from gridExtra
+  if (is.null(p)) {
+    return(tp)
+  }
+  pcol <- unique(ggplot_build(p)$data[[1]][["colour"]])
+  j <- which(tp$layout$name == "rowhead-fg")
+  
+  for (i in seq_along(pcol)) {
+    tp$grobs[j][[i+1]][["gp"]] = grid::gpar(col = pcol[i])
+  }
+  return(tp)
+}
+
+# from enrichplot
+gsInfo <- function(object, geneSetID) {
+  geneList <- object@geneList
+  
+  if (is.numeric(geneSetID))
+    geneSetID <- object@result[geneSetID, "ID"]
+  
+  geneSet <- object@geneSets[[geneSetID]]
+  exponent <- object@params[["exponent"]]
+  df <- gseaScores(geneList, geneSet, exponent, fortify=TRUE)
+  df$ymin=0
+  df$ymax=0
+  pos <- df$position == 1
+  h <- diff(range(df$runningScore))/20
+  df$ymin[pos] <- -h
+  df$ymax[pos] <- h
+  df$geneList <- geneList
+  
+  df$Description <- object@result[geneSetID, "Description"]
+  return(df)
+}
+```
+
+```{r "load libs"}
+import::from(readr, read_csv)
+import::from(magrittr, "%>%")
+import::from(dplyr, mutate, select, filter, rename, arrange, desc, group_by, summarise, ungroup)  # dplyr_mutate = mutate
+import::from(purrr, map)
+import::from(future, plan, multisession, sequential)
+import::from(furrr, furrr_options, future_map2)
+import::from(tibble, rownames_to_column)
+
+#import::from(stringr, str_replace_all, str_replace)  
+#import::from(DT, datatable)  
+#import::from(fs, dir_ls)  # for listing directories; - [ ] simplify by directly listing .h5 files
+#import::from(cli, cli_alert_info)
+#import::from(cowplot, theme_cowplot)
+#import::from(ggplot2, ggplot, theme_set, labs, geom_bar, aes, ggtheme)
+import::from(ggplot2, .all=TRUE) # importing all as there is too many
+import::from(RColorBrewer, brewer.pal)
+import::from(kableExtra, kbl)
+import::from(kableExtra, kbl, kable_classic)
+import:::here(gseaScores, .from = DOSE)
+
+library(DOSE)
+
+#### loading gene sets
+# loading genesets ---- NOT sure if this is necessary 
+gs_hallmark <- msigdbr::msigdbr(species = "Homo sapiens", category = c("H")) %>%
+  dplyr::distinct(gs_name, gene_symbol) %>% as.data.frame()  #dplyr::select(gs_name, entrez_gene)
+# C1
+gs_C1_positional <- msigdbr::msigdbr(species = "Homo sapiens", category = c("C1")) %>%
+  dplyr::distinct(gs_name, gene_symbol) %>% as.data.frame()
+# C2
+gs_C2_kegg <- msigdbr::msigdbr(species = "Homo sapiens", category = c("C2"), subcategory = "CP:KEGG") %>%
+  dplyr::distinct(gs_name, gene_symbol) %>% as.data.frame()
+gs_C2_reactome <- msigdbr::msigdbr(species = "Homo sapiens", category = c("C2"), subcategory = "CP:REACTOME") %>%
+  dplyr::distinct(gs_name, gene_symbol) %>% as.data.frame()
+# C3
+gs_C3_MIRDB <- msigdbr::msigdbr(species = "Homo sapiens", category = c("C3"), subcategory = "MIR:MIRDB") %>%
+  dplyr::distinct(gs_name, gene_symbol) %>% as.data.frame()
+gs_C3_GTRD <- msigdbr::msigdbr(species = "Homo sapiens", category = c("C3"), subcategory = "TFT:GTRD") %>%
+  dplyr::distinct(gs_name, gene_symbol) %>% as.data.frame()
+# C5
+gs_C5_GOBP <- msigdbr::msigdbr(species = "Homo sapiens", category = c("C5"), subcategory = "GO:BP") %>%
+  dplyr::distinct(gs_name, gene_symbol) %>% as.data.frame()
+gs_C5_GOCC <- msigdbr::msigdbr(species = "Homo sapiens", category = c("C5"), subcategory = "GO:CC") %>%
+  dplyr::distinct(gs_name, gene_symbol) %>% as.data.frame()
+gs_C5_GOMF <- msigdbr::msigdbr(species = "Homo sapiens", category = c("C5"), subcategory = "GO:MF") %>%
+  dplyr::distinct(gs_name, gene_symbol) %>% as.data.frame()
+gs_C5_HPO <- msigdbr::msigdbr(species = "Homo sapiens", category = c("C5"), subcategory = "HPO") %>%
+  dplyr::distinct(gs_name, gene_symbol) %>% as.data.frame()
+# C7
+gs_C7_IMMUNESIGDB <- msigdbr::msigdbr(species = "Homo sapiens", category = c("C7"), subcategory = "IMMUNESIGDB") %>%
+  dplyr::distinct(gs_name, gene_symbol) %>% as.data.frame()
+gs_C7_VAX <- msigdbr::msigdbr(species = "Homo sapiens", category = c("C7"), subcategory = "VAX") %>%
+  dplyr::distinct(gs_name, gene_symbol) %>% as.data.frame()
+# C8
+gs_C8_celltype <- msigdbr::msigdbr(species = "Homo sapiens", category = c("C8")) %>%
+  dplyr::distinct(gs_name, gene_symbol) %>% as.data.frame()
+
+
+gs_symbol_collection <- list(hallmark = gs_hallmark,
+                             C1_positional = gs_C1_positional,
+                             C2_kegg = gs_C2_kegg,
+                             C2_reactome = gs_C2_reactome,
+                             C3_MIRDB = gs_C3_MIRDB,
+                             C3_GTRD = gs_C3_GTRD,
+                             C5_GOBP = gs_C5_GOBP,
+                             C5_GOCC = gs_C5_GOCC,
+                             C5_GOMF = gs_C5_GOMF,
+                             C5_HPO = gs_C5_HPO,
+                             C7_IMMUNESIGDB = gs_C7_IMMUNESIGDB,
+                             C7_VAX = gs_C7_VAX,
+                             C8_celltype = gs_C8_celltype)
+
+
+```
+
+```{r "load data"}
+# original plots
+# this is the dataset that was used.
+load("~/workspace/results_dir/NFATc1_WT_all_gsea_results.RData")
+
+
+# this is just a random name of the variable that was used in TMEM6 paper. 
+lipid_genesets <- c("HALLMARK_GLYCOLYSIS", "HALLMARK_OXIDATIVE_PHOSPHORYLATION")
+
+# there is no big difference between global_stim and stim. SEvgi asked to use just stim, not global.
+KO1_vs_CTL_LIPID_comb_gseaplot <- gseaPlotESprofile(global_stim_WT_gsea_results$hallmark, geneSetID = lipid_genesets, ES_geom="line", NES_table = TRUE, remove_substring = "HALLMARK_", title = "")
+KO1_vs_CTL_LIPID_comb_gseaplot <- gseaPlotESprofile(stim_WT_gsea_results$hallmark, geneSetID = lipid_genesets, ES_geom="line", NES_table = TRUE, remove_substring = "HALLMARK_", title = "")
+
+KO1_vs_CTL_LIPID_comb_gseaplot <- gseaPlotESprofile(global_stim_NFATc1_gsea_results$hallmark, geneSetID = lipid_genesets, ES_geom="line", NES_table = TRUE, remove_substring = "HALLMARK_", title = "")
+KO1_vs_CTL_LIPID_comb_gseaplot <- gseaPlotESprofile(stim_NFATc1_gsea_results$hallmark, geneSetID = lipid_genesets, ES_geom="line", NES_table = TRUE, remove_substring = "HALLMARK_", title = "")
+
+# these are the individual plots for glyc and oxphos
+
+stim_WT_gsea_results_PLOT <- purrr::map(.x = lipid_genesets, .f = function(geneset_id){
+  gseaPlotESprofile(stim_WT_gsea_results$hallmark, geneSetID = geneset_id, ES_geom="line", NES_table = TRUE, remove_substring = NULL, title = "")
+}) %>% setNames(lipid_genesets)
+
+stim_NFATc1_gsea_results_PLOT <-  purrr::map(.x = lipid_genesets, .f = function(geneset_id){
+  gseaPlotESprofile(stim_NFATc1_gsea_results$hallmark, geneSetID = geneset_id, ES_geom="line", NES_table = TRUE, remove_substring = NULL, title = "")
+}) %>% setNames(lipid_genesets)
+
+```
+
+
+
+
+```{r "disasambled gseaPlotESprofile function"}
+
+# edited function to plot oxphos and glyc from different samples in one plot. x object is not used at the end and replaced with GS_DATA_override + scale is made constant for the ES plot.
+
+gseaPlotESprofile <- function(x, GS_DATA_override, geneSetID, title = "", color = "green", base_size = 11, 
+                               rel_heights = c(1.5, 0.5, 1), subplots = 1:3, ES_geom = "line",
+                               pvalue_table = FALSE, 
+                               NES_table = FALSE,
+                               remove_substring = NULL) {
+  # function based on enrichplot::gseaplot2 [all credit goes to the original author]
+  #  - adding option for NES_table that contains NES, pval, padj
+  #  - added horizontal dashed line at yintercept = 0 for running ES
+  #  - remove_substring = option to shorted geneset name(s) by fixed strink e.g. HALLMARK_ 
+  
+  # require(RColorBrewer) # brewer.pal
+  # require(ggplot2)
+  import::here(brewer.pal, .from = RColorBrewer)
+  import::here(ggplot2)
+  import::here(str_wrap, str_replace_all, .from = stringr)
+  import::here(plot_grid, .from=cowplot)
+  
+  ES_geom <- match.arg(ES_geom, c("line", "dot"))
+  geneList <- position <- NULL
+  # if (length(geneSetID) == 1) {
+  #   gsdata <- gsInfo(x, geneSetID)
+  #   
+  #   # cleaning and wrapping long strings
+  #   #gsdata$Description <- stringr::str_wrap(stringr::str_replace_all(gsdata$Description, pattern = "_", replacement = " "), width=20)
+  # }
+  # else {
+  #   gsdata <- do.call(rbind, lapply(geneSetID, gsInfo, object = x))
+  # }
+  
+  gsdata <- GS_DATA_override
+  
+  p <- ggplot(gsdata, aes_(x = ~x)) + xlab(NULL) + theme_classic(base_size) + 
+    theme(panel.grid.major = element_line(colour = "grey92"), 
+          panel.grid.minor = element_line(colour = "grey92"), 
+          panel.grid.major.y = element_blank(), panel.grid.minor.y = element_blank()) + 
+    scale_x_continuous(expand = c(0, 0)) 
+  if (ES_geom == "line") {
+    es_layer <- geom_line(aes_(y = ~runningScore, color = ~Description), 
+                          size = 1)
+  }
+  else {
+    es_layer <- geom_point(aes_(y = ~runningScore, color = ~Description), 
+                           size = 1, data = subset(gsdata, position == 1))
+  }
+  p.res <- p + es_layer + theme(legend.position = c(0.8, 0.8), 
+                                legend.title = element_blank(), legend.background = element_rect(fill = "transparent"))
+  p.res <- p.res + ylab("Running Enrichment Score") + theme(axis.text.x = element_blank(), 
+                                                            axis.ticks.x = element_blank(), axis.line.x = element_blank(), 
+                                                            plot.margin = margin(t = 0.2, r = 0.2, b = 0, l = 0.2, 
+                                                                                 unit = "cm"))+ ylim(-0.25, 0.5) # here is the set up of the scale for the ES plot
+  # adding horizontal line to distinguish between neg and pos running enrichment scores
+  p.res <- p.res + geom_hline(yintercept = 0, color="grey", linetype = "dashed")
+  
+  i <- 0
+  for (term in unique(gsdata$Description)) {
+    idx <- which(gsdata$ymin != 0 & gsdata$Description == 
+                   term)
+    gsdata[idx, "ymin"] <- i
+    gsdata[idx, "ymax"] <- i + 1
+    i <- i + 1
+  }
+  p2 <- ggplot(gsdata, aes_(x = ~x)) + geom_linerange(aes_(ymin = ~ymin, 
+                                                           ymax = ~ymax, color = ~Description)) + xlab(NULL) + ylab(NULL) + 
+    theme_classic(base_size) + theme(legend.position = "none", 
+                                     plot.margin = margin(t = -0.1, b = 0, unit = "cm"), axis.ticks = element_blank(), 
+                                     axis.text = element_blank(), axis.line.x = element_blank()) + 
+    scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0))
+  if (length(geneSetID) == 1) {
+    v <- seq(1, sum(gsdata$position), length.out = 9)
+    inv <- findInterval(rev(cumsum(gsdata$position)), v)
+    if (min(inv) == 0) 
+      inv <- inv + 1
+    col = c(rev(brewer.pal(5, "Blues")), brewer.pal(5, "Reds"))
+    ymin <- min(p2$data$ymin)
+    yy <- max(p2$data$ymax - p2$data$ymin) * 0.3
+    xmin <- which(!duplicated(inv))
+    xmax <- xmin + as.numeric(table(inv)[unique(inv)])
+    d <- data.frame(ymin = ymin, ymax = yy, xmin = xmin, 
+                    xmax = xmax, col = col[unique(inv)])
+    p2 <- p2 + geom_rect(aes_(xmin = ~xmin, xmax = ~xmax, 
+                              ymin = ~ymin, ymax = ~ymax, fill = ~I(col)), data = d, 
+                         alpha = 0.9, inherit.aes = FALSE)
+  }
+  df2 <- p$data
+  df2$y <- p$data$geneList[df2$x]
+  p.pos <- p + geom_segment(data = df2, aes_(x = ~x, xend = ~x, 
+                                             y = ~y, yend = 0), color = "grey")
+  p.pos <- p.pos + ylab("Ranked list metric") + xlab("Rank in Ordered Dataset") + 
+    theme(plot.margin = margin(t = -0.1, r = 0.2, b = 0.2, 
+                               l = 0.2, unit = "cm"))
+  if (!is.null(title) && !is.na(title) && title != "") 
+    p.res <- p.res + ggtitle(title)
+  if (length(color) == length(geneSetID)) {
+    p.res <- p.res + scale_color_manual(values = color)
+    if (length(color) == 1) {
+      p.res <- p.res + theme(legend.position = "none")
+      p2 <- p2 + scale_color_manual(values = "black")
+    }
+    else {
+      p2 <- p2 + scale_color_manual(values = color)
+    }
+  }
+  if (pvalue_table) {
+    pd <- x[geneSetID, c("Description", "pvalue", "p.adjust")]
+    names(pd) <- c("Description", "NES", "pval", "padj")
+    pd <- pd[order(pd[, 1], decreasing = FALSE), ]
+    rownames(pd) <- pd$Description
+    pd <- pd[, -1]
+    pd <- round(pd, 4)
+    tp <- tableGrob2(pd, p.res)
+    p.res <- p.res + theme(legend.position = "none") + 
+      annotation_custom(tp, xmin = quantile(p.res$data$x, 0.5), 
+                        xmax = quantile(p.res$data$x, 0.95), 
+                        ymin = quantile(p.res$data$runningScore, 0.75), 
+                        ymax = quantile(p.res$data$runningScore, 0.9))
+  }
+  
+  if (NES_table) {
+    pd <- x[geneSetID, c("Description", "NES", "pvalue", "p.adjust")]
+    names(pd) <- c("Description", "NES", "pval", "padj")
+    pd <- pd[order(pd[, 1], decreasing = FALSE), ]
+    # adjust length of geneset names
+    # make it dynamic
+    # hardcoded removal of hallmark in string
+    if (!is.null(remove_substring)) {
+      #pd$Description <- gsub(pattern = "HALLMARK_", replacement = "", pd$Description) 
+      pd$Description <- gsub(pattern = remove_substring, replacement = "", pd$Description) 
+    }
+    rownames(pd) <- str_wrap(str_replace_all(pd$Description, pattern = "_", replacement = " "), width=30) # original: pd$Description
+    
+    pd <- pd[, -1]
+    #pd <- round(pd, 4)
+    pd$NES <- round(pd$NES, 2)
+    pd$pval <- round(pd$pval, 4)
+    pd$padj <- round(pd$padj, 4)
+    tp <- tableGrob2(pd, p.res)
+    
+    p.res <- p.res + theme(legend.position = "none") +
+      annotation_custom(tp,
+                        xmin = quantile(p.res$data$x, 0.5),
+                        xmax = quantile(p.res$data$x, 0.95),
+                        ymin = quantile(p.res$data$runningScore, 0.75),
+                        ymax = quantile(p.res$data$runningScore, 0.9))
+    
+  }
+  
+  plotlist <- list(p.res, p2, p.pos)[subplots]
+  n <- length(plotlist)
+  plotlist[[n]] <- plotlist[[n]] + theme(axis.line.x = element_line(), 
+                                         axis.ticks.x = element_line(), axis.text.x = element_text())
+  if (length(subplots) == 1) 
+    return(plotlist[[1]] + theme(plot.margin = margin(t = 0.2, 
+                                                      r = 0.2, b = 0.2, l = 0.2, unit = "cm")))
+  if (length(rel_heights) > length(subplots)) 
+    rel_heights <- rel_heights[subplots]
+  plot_grid(plotlist = plotlist, ncol = 1, align = "v", rel_heights = rel_heights)
+}
+
+```
+
+
+```{r}
+# assembly of the custom object for glyc
+GS_combined <- gsInfo(stim_WT_gsea_results$hallmark, "HALLMARK_GLYCOLYSIS")
+GS_combined$Description <- "HALLMARK_GLYCOLYSIS_WT"
+
+tmp <- gsInfo(stim_NFATc1_gsea_results$hallmark, "HALLMARK_GLYCOLYSIS")
+tmp$Description <- "HALLMARK_GLYCOLYSIS_NFATc1"
+
+GS_combined <- rbind(GS_combined, tmp)
+
+KO1_vs_CTL_LIPID_comb_gseaplot <- gseaPlotESprofile(stim_NFATc1_gsea_results$hallmark, GS_DATA_override = GS_combined, geneSetID = c("HALLMARK_GLYCOLYSIS_WT", "HALLMARK_GLYCOLYSIS_NFATc1"), ES_geom="line", NES_table = FALSE, remove_substring = "HALLMARK_", title = "")
+KO1_vs_CTL_LIPID_comb_gseaplot
+
+
+# assembly of the object for oxphos
+GS_combined <- gsInfo(stim_WT_gsea_results$hallmark, "HALLMARK_OXIDATIVE_PHOSPHORYLATION")
+GS_combined$Description <- "HALLMARK_OXIDATIVE_PHOSPHORYLATION_WT"
+
+tmp <- gsInfo(stim_NFATc1_gsea_results$hallmark, "HALLMARK_OXIDATIVE_PHOSPHORYLATION")
+tmp$Description <- "HALLMARK_OXIDATIVE_PHOSPHORYLATION_NFATc1"
+
+GS_combined <- rbind(GS_combined, tmp)
+
+KO1_vs_CTL_LIPID_comb_gseaplot <- gseaPlotESprofile(stim_NFATc1_gsea_results$hallmark, GS_DATA_override = GS_combined, geneSetID = c("HALLMARK_OXIDATIVE_PHOSPHORYLATION_WT", "HALLMARK_OXIDATIVE_PHOSPHORYLATION_NFATc1"), ES_geom="line", NES_table = FALSE, remove_substring = "HALLMARK_", title = "")
+KO1_vs_CTL_LIPID_comb_gseaplot
+```
