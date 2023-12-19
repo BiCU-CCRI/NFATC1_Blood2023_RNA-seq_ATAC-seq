@@ -1,0 +1,4 @@
+"design"	"full_formula"	"reduced_name"	"reduced_formula"	"significant"
+"NFATc1"	"~ genotype * stimulation"	"wo_genotype"	"~ stimulation"	471
+"NFATc1"	"~ genotype * stimulation"	"wo_stimulation"	"~ genotype"	10680
+"NFATc1"	"~ genotype * stimulation"	"wo_interaction"	"~ genotype + stimulation"	32
