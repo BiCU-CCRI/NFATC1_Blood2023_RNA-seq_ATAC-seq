@@ -1,0 +1,1886 @@
+---
+title: "Tala project: ATAC-seq"
+author: "Peter Repiscak"
+date: "21/01/2020"
+output:
+ html_document:
+  code_folding: hide
+  toc: true
+  toc_float: false
+  theme: united
+always_allow_html: true
+---
+
+```{r setup, include=FALSE}
+#project setup
+simpleCache::setCacheDir(cacheDir = "/home/peter_r/.cache_dir")
+
+project_name <- "tala_atacseq"
+
+base_dir <- "/home/peter_r"
+out_dir <- file.path(base_dir, "results")
+dir.create(out_dir, showWarnings = TRUE)
+input_dir <- file.path(base_dir, "datasets") 
+resources_dir <- file.path(base_dir, "resources")
+#data_dir <- file.path(input_dir, "COUNT") # COUNT or use COUNT_AGGR;
+metadata_dir <- file.path(input_dir, "metadata")
+
+#check temp dir
+tempdir()
+
+#report options
+knitr::opts_chunk$set(echo = TRUE,
+                      eval = TRUE,
+                      cache.lazy = FALSE,
+                      message=FALSE,
+                      warning=FALSE,
+                      dev = "png",
+                      cache.path = file.path(out_dir,"report","cache/"),
+                      fig.path = file.path(out_dir,"report","files/"))
+options(width=100)
+
+```
+
+
+```{r run in the terminal, eval = FALSE, include = FALSE}
+#rmarkdown::render(output_file = stringr::str_replace_all(date(),c(" +"="-", ":"="_")), input = here::here("/home/peter_r/scripts/tiaf1_analysis.Rmd"), output_dir = file.path("/home/peter_r/results/report","html/"))
+
+# rmarkdown::render(input = "/home/peter_r/scripts/tiaf1_analysis.Rmd", output_file = stringr::str_replace_all(date(),c(" +"="-", ":"="_")), output_dir = file.path("/home/peter_r/results/report","html/"))
+```
+
+#Initialization
+### Load libraries
+
+```{r libraries, message=FALSE}
+library("tidyverse")
+library("fastcluster")
+library("LOLA")
+library("simpleCache")
+library("GenomicRanges")
+library("rtracklayer")
+library("readxl")
+library("data.table")
+
+```
+
+```{r libraries, message=FALSE, eval=FALSE, include=FALSE}
+#c("fastcluster", "cluster","data.table", "ggplot2", "LOLA", "simpleCache", "GenomicRanges")
+
+library("tidyverse")
+library("fastcluster")
+library("LOLA")
+library("simpleCache")
+library("GenomicRanges")
+library("rtracklayer")
+library("readxl")
+
+# Libraries based on the tutorial
+# https://bioinformatics-core-shared-training.github.io/cruk-summer-school-2019/ChIPSeq/Materials/Practicals/Day5/Practical01_ATAC-seq_analysis_SS.html
+# http://bioconductor.org/packages/release/bioc/vignettes/ATACseqQC/inst/doc/ATACseqQC.html
+# if (!requireNamespace("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# 
+#BiocManager::install("ATACseqQC", "ChIPseeker", "ChIPpeakAnno", "systemPipeR")
+
+#library("ATACseqQC")
+
+#library("Rsubread")
+#library("Rsamtools")
+#library("ggplot2")
+#library("devtools")
+#library("magrittr")
+
+
+# based on https://rockefelleruniversity.github.io/RU_ATACseq/presentations/singlepage/RU_ATAC_part2.html
+# add to the Docker image!
+# tracktables - Build IGV tracks and HTML reports
+# R packages from: https://rockefelleruniversity.github.io/RU_ATACseq/
+# BiocManager::install('ashr', update = TRUE, ask = FALSE)
+# BiocManager::install('ChIPQC', update = TRUE, ask = FALSE)
+# #BiocManager::install('DiffBind', update = TRUE, ask = FALSE)  # error installing SystemPipeR and DOT missing; needs some system library!
+# BiocManager::install('rtracklayer', update = TRUE, ask = FALSE)
+# BiocManager::install('ChIPseeker', update = TRUE, ask = FALSE)
+# BiocManager::install('soGGi', update = TRUE, ask = FALSE)
+# BiocManager::install('GenomicAlignments', update = TRUE, ask = FALSE)
+# BiocManager::install('DESeq2', update = TRUE, ask = FALSE)
+# BiocManager::install('tracktables', update = TRUE, ask = FALSE)
+# BiocManager::install('clusterProfiler', update = TRUE, ask = FALSE)
+# BiocManager::install('rGREAT', update = TRUE, ask = FALSE)
+# BiocManager::install('MotifDb', update = TRUE, ask = FALSE)
+# BiocManager::install('Biostrings', update = TRUE, ask = FALSE)
+# BiocManager::install('GenomicRanges', update = TRUE, ask = FALSE)
+# BiocManager::install('pheatmap', update = TRUE, ask = FALSE)
+# BiocManager::install('universalmotif', update = TRUE, ask = FALSE)
+# BiocManager::install('seqLogo', update = TRUE, ask = FALSE)
+# BiocManager::install('ATACseqQC', update = TRUE, ask = FALSE)
+# BiocManager::install('JASPAR2020', update = TRUE, ask = FALSE)
+# BiocManager::install('motifmatchr', update = TRUE, ask = FALSE)
+# BiocManager::install('chromVAR', update = TRUE, ask = FALSE)
+# BiocManager::install('ggseqlogo', update = TRUE, ask = FALSE)
+# BiocManager::install('TFBSTools', update = TRUE, ask = FALSE)
+# BiocManager::install('motifStack', update = TRUE, ask = FALSE)
+# BiocManager::install('testthat', update = TRUE, ask = FALSE)
+# BiocManager::install('yaml', update = TRUE, ask = FALSE)
+# BiocManager::install("ChIPQC", update = TRUE, ask = FALSE) # error
+# error:
+# Error in dyn.load(file, DLLpath = DLLpath, ...) : 
+#   unable to load shared object '/usr/local/lib/R/site-library/V8/libs/V8.so':
+#   libnode.so.64: cannot open shared object file: No such file or directory
+# Calls: <Anonymous> ... namespaceImport -> loadNamespace -> library.dynam -> dyn.load
+# Execution halted
+
+#BiocManager::install(c("ChIPQC", "ChIPseeker", "tracktables", "MotifDb", "universalmotif", "JASPAR2020"))
+
+#https://www.bioconductor.org/packages/release/bioc/html/Organism.dplyr.html
+
+# http://bioconductor.org/packages/devel/workflows/vignettes/annotation/inst/doc/Annotation_Resources.html
+# https://bioconductor.org/packages/devel/bioc/vignettes/AnnotationHub/inst/doc/AnnotationHub.html
+# https://bioconductor.org/packages/devel/bioc/vignettes/AnnotationHub/inst/doc/AnnotationHub-HOWTO.html
+
+# download EnsDb.Hsapiens.v86 or newer using ensembldb; AnnotationHub (or everything using AnnotationHub!)
+# BiocManager::install(c("AnnotationHub", 
+#                        "Homo.sapiens",
+#                        "Organism.dplyr",
+#                        "TxDb.Hsapiens.UCSC.hg38.knownGene",
+#                        "BSgenome.Hsapiens.UCSC.hg38",
+#                        "org.Hs.eg.db",
+#                        "EnsDb.Hsapiens.v86"),
+#                      update = TRUE, ask = FALSE)
+
+
+```
+
+```{r loading data, include=FALSE, eval=TRUE}
+# Loading atac-seq data ----
+# loading metadata from excel file
+project_metadata_raw <- readxl::read_excel(path = file.path(metadata_dir, "atacseq_metadata_TS.xlsx"), sheet = "atacseq_metadata")
+
+# peaks files
+narrowPeak_files <- list.files(path = input_dir, pattern = ".*\\.narrowPeak", full.names=TRUE, recursive=TRUE)
+narrowPeak_df <- data.frame(narrowPeak_files = narrowPeak_files) %>%
+  dplyr::mutate(sample_name = gsub(pattern = "(.+/)(.+)(_peaks.narrowPeak)", replacement = "\\2", narrowPeak_files))
+
+# bam files
+bam_files <- list.files(path = input_dir, pattern = ".*_sort_dedup.bam$", full.names=TRUE, recursive=TRUE)
+bam_df <- data.frame(bam_files = bam_files) %>%
+  dplyr::mutate(sample_name = gsub(pattern = "(.+/)(.+)(_sort_dedup.bam)", replacement = "\\2", bam_files))
+
+# updating metadata wiht peaks and bam files
+project_metadata <- project_metadata_raw %>%
+  dplyr::left_join(., narrowPeak_df, by = "sample_name") %>%
+  dplyr::left_join(., bam_df, by = "sample_name") 
+
+# there is also a function to load peaks readPeaks?
+# umPeaksDt <- data.table::rbindlist(sapply(X=project_metadata$narrowPeak_files, FUN=fread, simplify=FALSE), idcol="narrowPeak_files", fill=T)
+# table(umPeaksDt$V1)
+# umPeaksDt <- umPeaksDt[!grepl("_|M",V1)] # filtering mitochondrial and extra chromosomes containing underscore _
+# table(umPeaksDt$V1)
+# umPeaks <- with(umPeaksDt, GenomicRanges::GRanges(V1, IRanges(V2,V3)))
+
+
+```
+
+```{r initial analysis, include=FALSE, eval=TRUE}
+# Mainly following:
+# https://rockefelleruniversity.github.io/RU_ATACseq/presentations/singlepage/RU_ATAC_part2.html
+ 
+#library(soGGi)
+#library(TxDb.Hsapiens.UCSC.hg38.knownGene)  # replace with ensembl; e.g. ensembldb
+# original Peaks file contains chr?
+#library(EnsDb.Hsapiens.v86)
+
+#library(biomaRt)
+# listMarts(host="www.ensembl.org")
+# mart <- useMart(biomart="ENSEMBL_MART_ENSEMBL", host="www.ensembl.org")
+# datasets <- listDatasets(mart)
+# head(datasets)
+# subset(datasets, grepl("hsapiens_gene_ensembl", dataset, ignore.case=TRUE))
+
+## Retrieve the full transcript dataset for Worm:
+# txdb_ensembl <- makeTxDbFromBiomart(dataset="hsapiens_gene_ensembl")
+# seqlevelsStyle(txdb_ensembl) <- "UCSC"
+
+# or retrieving using AnnotationHub
+s# https://bioconductor.org/packages/3.13/bioc/vignettes/ensembldb/inst/doc/ensembldb.html#10_Getting_or_building_EnsDb_databasespackages
+library(AnnotationHub)
+library(ensembldb)
+library(soGGi)
+library(Rsamtools)
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+library(ChIPseeker)
+#library(furrr)
+
+## Load the annotation resource.
+annot_hub <- AnnotationHub()
+ahDb <- query(annot_hub, pattern = c("Homo Sapiens", "EnsDb", 103))
+snapshotDate(ahDb)  # "2020-10-27"
+
+txdb_ah_ensembl <- ahDb[["AH89426"]]
+seqlevelsStyle(txdb_ah_ensembl) <- "UCSC"
+
+## retriebe all genes
+#gns <- genes(ahEdb)
+
+# extract gene locations (TSS to TTS); Transcript start and termination site
+# https://biodatascience.github.io/compbio/bioc/ranges.html
+# - [ ] rerun with Ensembl; however most functions from ChiPseeker etc. support natively UCSC
+txdb <- TxDb.Hsapiens.UCSC.hg38.knownGene
+genesLocations <- genes(txdb)
+#genesLocations <- genes(txdb_ah_ensembl)  # genes(TxDb.Hsapiens.UCSC.hg38.knownGene)  #  genes(EnsDb.Hsapiens.v86)
+
+# Plotting regions in soGGi ----
+# The resize() function allows to adjust the width of regions.
+#  use the resize() function to extract the location of start of every gene (the TSSs) in a stranded manner.
+# fix - see intra-range-methods IRanges
+tssLocations <- GenomicRanges::resize(genesLocations, fix = "start", width = 1)
+
+#mainChromosomes <- paste0("chr", c(1:22, "X", "Y", "M")) # ignoring mitochondrial - c(1:22, "X", "Y", "M")
+
+#myindex <- (match(seqnames(tssLocations), mainChromosomes))
+#sum(is.na(myindex)) # index contains NA?!, but the keepStandardChromosomes below works?!
+
+table(seqnames(tssLocations))
+#tssLocations <- tssLocations[as.numeric(myindex)]
+tssLocations <- GenomeInfoDb::keepStandardChromosomes(tssLocations, pruning.mode="coarse")
+table(seqnames(tssLocations))
+#seqlevels(tssLocations) <- mainChromosomes
+
+# plotting regions ----
+# The soGGi package’s regionPlot() function requires a BAM file of data to plot supplied to bamFile parameter and a GRanges to plot over supplied to testRanges argument.
+
+sample_number=1
+sortedBAM <- project_metadata$bam_files[sample_number]
+
+# all regions
+#allSignal <- regionPlot(bamFile = sortedBAM, testRanges = tssLocations)
+
+# Additionally we supply information on input file format to format parameter, whether data is paired to paired parameter and type of plot to style parameter. We explore visualization options visualization training.
+#A useful feature is that we can we can specify the minimum and maximum fragment lengths of paired reads to be used in our plot with the minFragmentLength and maxFragmentLength parameters. This allows us to select only our nucleosome free signal (< 100 base-pairs) to produce our metaplot over TSS regions.
+
+# this is single-end so a lot of above options do not apply
+# [ ] error loading bam file?
+# Error in `rownames<-`(`*tmp*`, value = RangesNeg[seqnames(RangesNeg) %in%  : 
+# attempt to set 'rownames' on an object with no dimensions
+# tss_plot <- soGGi::regionPlot(bamFile = sortedBAM, 
+#                       testRanges = tssLocations, 
+#                       style = "point", 
+#                       format = "bam", 
+#                       paired = FALSE,
+#                       #minFragmentLength = 0, 
+#                       #maxFragmentLength = 100, 
+#                       #forceFragment = 50,
+#                       samplename = project_metadata$sample_name[sample_number])
+
+tss_plot <- soGGi::regionPlot(bamFile = sortedBAM,
+                      testRanges = tssLocations,
+                      style = "point",
+                      format = "bam",
+                      paired = FALSE,
+                      samplename = project_metadata$sample_name[sample_number])
+
+#install.packages("furrr")
+future::plan(multisession, workers = 4)
+
+file.exists(project_metadata$bam_files)
+tss_plots <- furrr::future_map(.x = project_metadata$sample_name, .f = function(sample_name){
+  message(paste0("Processing: ", sample_name))
+  soGGi::regionPlot(bamFile = project_metadata$bam_files[project_metadata$sample_name == sample_name],
+                      testRanges = tssLocations,
+                      style = "point",
+                      format = "bam",
+                      paired = FALSE,
+                      samplename = sample_name)
+  
+}) %>% setNames(project_metadata$sample_name)
+
+future::plan(sequential)
+
+class(tss_plot)
+plotRegion(tss_plot) + theme_bw()
+plotRegion(tss_plots$ND_02) + theme_bw()
+
+
+```
+
+```{r QC}
+library(ChIPQC)
+library(rtracklayer)
+library(DT)
+library(dplyr)
+library(tidyr)
+
+#blacklist <- with(fread("wget -O - http://mitra.stanford.edu/kundaje/akundaje/release/blacklists/hg38-human/hg38.blacklist.bed.gz | zcat"),GRanges(V1,IRanges(V2,V3)))
+
+# loading repeats regions and blacklisted regions ----
+# - [ ] check about repeat regions? where are they coming from and their meaning?
+# - [ ] include Hi-C data for annotation?! - enhancers
+# - [ ] TFs enrichment
+# - [ ] motif enrichment
+
+#blacklist <- rtracklayer::import.bed("http://mitra.stanford.edu/kundaje/akundaje/release/blacklists/hg38-human/hg38.blacklist.bed.gz")
+blacklist <- with(fread("wget -O - http://mitra.stanford.edu/kundaje/akundaje/release/blacklists/hg38-human/hg38.blacklist.bed.gz | zcat"), GRanges(V1,IRanges(V2,V3)))
+
+regionDB=paste0(resources_dir, "/regions/LOLACore/hg38")
+repeats <- LOLA::getRegionSet(regionDB = regionDB, collections="ucsc_features", "rmsk.bed")#[[1]]
+
+# loading narrowPeak
+#openRegionPeaks <- project_metadata$narrowPeak_files[sample_number]
+
+qc_results <- ChIPQC::ChIPQCsample(reads = sortedBAM, 
+    peaks = project_metadata$narrowPeak_files[sample_number], 
+    annotation = "hg38",
+    chromosomes = NULL, 
+    blacklist = blacklist, 
+    verboseT = TRUE)
+
+qc_metrics <- ChIPQC::QCmetrics(qc_results)
+qc_metrics[c("RiBL%", "RiP%")]
+
+flag_counts <- ChIPQC::flagtagcounts(qc_results)
+DupRate <- flag_counts["DuplicateByChIPQC"]/flag_counts["Mapped"]
+DupRate * 100
+```
+
+```{r removing blackisted and repeats, include=TRUE, eval=TRUE}
+# Removing blacklists too early can hide some of the QC issues in your data. The blacklist should always be considered in your analysis and recommended to removed data from these regions once QC is considered.
+
+umPeaksDt <- data.table::rbindlist(sapply(X=project_metadata$narrowPeak_files, FUN=fread, simplify=FALSE), idcol="narrowPeak_files", fill=T)
+table(umPeaksDt$V1)
+umPeaksDt <- umPeaksDt[!grepl("_|M",V1)] # filtering mitochondrial and extra chromosomes containing underscore _
+table(umPeaksDt$V1)
+umPeaks <- with(umPeaksDt, GenomicRanges::GRanges(V1, IRanges(V2,V3)))
+# merge overlapping peaks:
+peaks <- GenomicRanges::reduce(umPeaks)
+length(peaks)
+MacsCalls <- peaks
+
+#MacsCalls <- granges(qc_results[seqnames(qc_results) %in% "chr20"])
+
+# see https://biodatascience.github.io/compbio/bioc/ranges.html
+# If we just wanted to subset to the genes which overlap a given range, we can use overlapsAny:
+#g[overlapsAny(g, query[1])]
+#This is equivalent to the following:
+#g[g %over% query[1]] 
+
+# data.frame(blacklisted = sum(MacsCalls %over% blacklist), 
+#            not_blacklisted = sum(!MacsCalls %over% blacklist))
+# sum((!MacsCalls %over% blacklist))
+# sum((!MacsCalls %over% repeats))
+# sum((!MacsCalls %over% blacklist) & (!MacsCalls %over% repeats))
+#MacsCalls <- MacsCalls[(!MacsCalls %over% blacklist) & (!MacsCalls %over% repeats)]
+
+data.frame(blacklisted = sum(IRanges::overlapsAny(MacsCalls, blacklist)),
+           not_blacklisted = sum(!IRanges::overlapsAny(MacsCalls, blacklist)))
+sum(!IRanges::overlapsAny(MacsCalls, blacklist))
+sum(!IRanges::overlapsAny(MacsCalls, repeats))
+sum(!IRanges::overlapsAny(MacsCalls, blacklist) & !IRanges::overlapsAny(MacsCalls, repeats))
+MacsCalls <- MacsCalls[!IRanges::overlapsAny(MacsCalls, blacklist) & !IRanges::overlapsAny(MacsCalls, repeats)]
+length(MacsCalls)
+
+# coverage over chromosomes
+# also use GRangesList to calculate per sample
+# https://guangchuangyu.github.io/2016/02/covplot-supports-grangeslist/
+peak_granges_list <- GenomicRanges::GRangesList(Clone_D8=ChIPseeker::readPeakFile(project_metadata$narrowPeak_files[1]),
+                                                ND_01=ChIPseeker::readPeakFile(project_metadata$narrowPeak_files[2]),
+                                                ND_02=ChIPseeker::readPeakFile(project_metadata$narrowPeak_files[3]),
+                                                Patient=ChIPseeker::readPeakFile(project_metadata$narrowPeak_files[4]))
+peaks_per_chr <- ChIPseeker::covplot(peak_granges_list)
+print(peaks_per_chr)
+#covplot(MacsCalls)
+#col <- c(CBX6='red', CBX7='green')
+#peaks_per_chr + facet_grid(chr ~ .id) + scale_color_manual(values=col) + scale_fill_manual(values=col)
+peaks_per_chr2 <- peaks_per_chr + facet_grid(chr ~ .id)
+
+#overlapBlacklist <- GenomicRanges::countOverlaps(peaks, blacklist_regions)>0
+#overlapRepeats <- GenomicRanges::countOverlaps(peaks, repeats)>0
+#sum(!overlapRepeats & !overlapBlacklist)
+#MacsCalls2 <- peaks[!overlapRepeats & !overlapBlacklist]
+# both approaches are identical; using countOverlap is clearer?
+# identical(MacsCalls, peaks)
+                       
+```
+
+```{r annotating peaks, include=TRUE, eval=TRUE}
+# Annotating Open Regions
+# 1. A simple approach to annotating nucleosome free region to genes is to associate regions to their closest gene or within a window around a genes transcriptional start site. - using ChIPseeker
+# see also for Ensembl annotation http://www.bioconductor.org/packages/release/bioc/vignettes/ChIPseeker/inst/doc/ChIPseeker.html
+
+#??? BiocManager::install("ChIPseeker", version = "devel")
+
+#library(ChIPseeker)
+#library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+seqlevelsStyle(txdb_ah_ensembl) <- "UCSC"
+
+#BiocManager::install("EnsDb.Hsapiens.v86")
+# library(EnsDb.Hsapiens.v86)
+# edb <- EnsDb.Hsapiens.v86
+# seqlevelsStyle(edb) <- "UCSC"
+
+# library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+# txdb <- TxDb.Hsapiens.UCSC.hg38.knownGene
+
+# add enhancers from Hi-C data (from Florian!)
+peakAnno <- ChIPseeker::annotatePeak(MacsCalls, 
+                                     tssRegion=c(-3000, 3000),
+                         TxDb=txdb, 
+                         annoDb="org.Hs.eg.db")
+
+# plotAnnoPie(peakAnno)
+# 
+# peakAnno2 <- annotatePeak(MacsCalls, tssRegion=c(-3000, 3000),
+#                              TxDb=edb, annoDb="org.Hs.eg.db")
+
+#plotAnnoPie(peakAnno)
+
+# does not work for ensembl:
+# https://support.bioconductor.org/p/129674/
+# https://github.com/YuLab-SMU/ChIPseeker/pull/120
+# download development version of ChIPseeker
+# re-do analysis with EnsemblIDs!
+
+# MacsCalls_Anno <- ChIPseeker::annotatePeak(MacsCalls, 
+#                                            TxDb = txdb_ah_ensembl,
+#                                            tssRegion = c(-3000, 3000),
+#                                            level = "transcript",
+#                                            annoDb = "org.Hs.eg.db") # level = "transcript" or "gene"; "transcript" - default
+
+# http://bioconductor.org/packages/devel/bioc/vignettes/ChIPseeker/inst/doc/ChIPseeker.html
+# The output of annotatePeak is csAnno instance. ChIPseeker provides as.GRanges to convert csAnno to GRanges instance, and as.data.frame to convert csAnno to data.frame which can be exported to file by write.table.
+
+peakAnno
+
+# Displaying annotation distribution
+
+plotAnnoPie(peakAnno)
+plotAnnoBar(peakAnno)
+#install.packages("ggupset")
+#ChIPseeker::upsetplot(peakAnno, vennpie=TRUE)
+plotDistToTSS(peakAnno,
+              title="Distribution of transcription factor-binding loci\nrelative to TSS")
+
+
+# Enrichment analysis
+#BiocManager::install("ReactomePA")  # add to docker!
+library(ReactomePA)
+
+pathway1 <- ReactomePA::enrichPathway(as.data.frame(peakAnno)$geneId)
+head(pathway1, 2)
+
+# different enrichment
+library(rGREAT)
+great_Job <- submitGreatJob(MacsCalls, species = "hg38")
+availableCategories(great_Job)
+
+great_ResultTable <- getEnrichmentTables(great_Job, category = "GO")
+names(great_ResultTable)
+great_ResultTable[["GO Biological Process"]][1:4, ]
+
+```
+
+```{r differential accesibility analysis prep, include=TRUE, eval=TRUE}
+# define a set of non-redundant peaks present in at least 2 samples and use these to assess changes in ATACseq (ideally in nucleosome free)
+# peaks <- dir("~/Downloads/ATAC_Workshop/ATAC_Data/ATAC_Peaks_forCounting/", pattern = "*.narrowPeak", 
+#     full.names = TRUE)
+
+myPeaks <- lapply(project_metadata$narrowPeak_files, ChIPQC:::GetGRanges, simple = TRUE)
+allPeaksSet_nR <- GenomicRanges::reduce(unlist(GRangesList(myPeaks)))  # similar approach to the above peaks!
+#all.equal(allPeaksSet_nR, peaks)
+
+overlap <- list()
+for (i in 1:length(myPeaks)) {
+    overlap[[i]] <- allPeaksSet_nR %over% myPeaks[[i]]
+}
+overlapMatrix <- do.call(cbind, overlap)
+colnames(overlapMatrix) <- project_metadata$sample_name # basename(project_metadata$narrowPeak_files)
+mcols(allPeaksSet_nR) <- overlapMatrix
+#allPeaksSet_nR[1:2, ]
+
+# similar to https://rockefelleruniversity.github.io/RU_ChIPseq/presentations/slides/ChIPseq_In_Bioconductor4.html#32
+# also see part for exporting beds to visualize in IGV:
+#  export.bed(ch12_HC_Peaks, "ch12_HC_Peaks.bed")
+limma::vennDiagram(mcols(allPeaksSet_nR))
+limma::vennCounts(mcols(allPeaksSet_nR))
+
+# We filter out peaks in blacklists and in ChrM prior to testing to eliminate potential artifact differential calls.
+#  also removing all _ weird chromosomes; see above!
+#nrToCount2 <- allPeaksSet_nR[!allPeaksSet_nR %over% blacklist & !seqnames(allPeaksSet_nR) %in% "chrM"]
+#chr_to_remove <- as.character(unique(seqnames(allPeaksSet_nR)[grep("_|chrM", seqnames(allPeaksSet_nR))]))
+nrToCount <- allPeaksSet_nR[!IRanges::overlapsAny(allPeaksSet_nR, blacklist) & !grepl("_|M", seqnames(allPeaksSet_nR))]  # need to drop levels of extra chr
+#nrToCount <- allPeaksSet_nR[!IRanges::overlapsAny(allPeaksSet_nR, blacklist) & !seqnames(allPeaksSet_nR) %in% chr_to_remove]
+#identical(nrToCount, nrToCount2) # TRUE if only !grepl("M") is used
+table(seqnames(nrToCount))
+# seqnames(nrToCount) <- droplevels(seqnames(nrToCount))
+# seqlevels(nrToCount) <- droplevels(seqlevels(nrToCount))
+
+# seqlevels(tssLocations) <- mainChromosomes
+
+# umPeaksDt <- umPeaksDt[!grepl("_|M",V1)]
+# nrToCount
+
+# Counting for differential ATACseq ----
+library(Rsubread)
+occurrences <- rowSums(as.data.frame(elementMetadata(nrToCount)))
+
+# in two and more samples!
+# in tutorial error: consensusToCount not defined?
+consensusToCount <- nrToCount[occurrences >= 2, ]  # potentially ignore Clone?!
+consensusToCount
+
+# consensusToCounts is from older workshop: https://rockefelleruniversity.github.io/RU_ATAC_Workshop.html
+
+# counting reads ----
+#library(GenomicAlignments)
+#bamsToCount <- dir("~/Downloads/ATAC_Workshop/ATAC_Data/ATAC_BAM_forCounting/", full.names = TRUE, pattern = "*.\\.bam$")
+
+# to control memory we specify the number of reads to be held in memory at one time using the yield() parameter.
+bamFL <- Rsamtools::BamFileList(project_metadata$bam_files, yieldSize = 5e+06)
+
+myCounts <- GenomicAlignments::summarizeOverlaps(features = consensusToCount, 
+                                                 reads = bamFL, 
+                                                 singleEnd = TRUE,
+                                                 ignore.strand = TRUE,
+                                                 fragments = FALSE,
+                                                 param = Rsamtools::ScanBamParam(flag = scanBamFlag(isDuplicate = FALSE)))
+
+colnames(myCounts) <- project_metadata$sample_name
+
+#count_data <- assay(myCounts)
+project_metadata <- project_metadata %>%
+  dplyr::mutate(sample_group = gsub(pattern = "(.+)(_.+)", replacement = "\\1", sample_name)) %>%
+  dplyr::mutate(sample_group = factor(sample_group, levels = c("ND", "Patient", "Clone")))
+rownames(project_metadata) <- project_metadata$sample_name
+
+all(colnames(myCounts) == rownames(project_metadata))
+
+save(project_metadata, myCounts, blacklist, file = paste0(out_dir, "/atacseq_metadata_counts.RData"))
+
+# compare to Florian's approach
+# counts <- summarizeReads(peaks, dA$sample_name, dA$reads_file, useDuplicates=useDuplicates)
+# summarizeReads runs:
+# so <- as.data.table(assay(summarizeOverlaps(features = regs, 
+#                                             reads = BamFileList(file.paths[i], 
+#                                                                 yieldSize = 5000000), 
+#                                             ignore.strand = TRUE, 
+#                                             singleEnd = TRUE, 
+#                                             fragments = FALSE, 
+#                                             param = ScanBamParam(flag = scanBamFlag(isDuplicate = useDuplicates)))))
+# counts[, rpm:=count / lib$dt2namedVec(counts[,sum(count),by=sampleName],"sampleName")[sampleName] * 1000000]
+# counts
+
+```
+
+```{r differential accesibility analysis run, include=TRUE, eval=TRUE}
+
+# DESeq2 analysis
+
+library(DESeq2)
+#load("data/myCounts.RData")
+# metaData <- data.frame(Group, row.names = colnames(myCounts))
+
+atacDDS <- DESeq2::DESeqDataSetFromMatrix(countData = assay(myCounts), 
+                                          colData = project_metadata, 
+                                          design = ~sample_group, 
+                                          rowRanges = rowRanges(myCounts))  # rowRanges(myCounts) == consensusToCount
+#dds <- DESeqDataSetFromMatrix(countData = dCounts, colData = lib$dtToDf(dA[colnames(dCounts),c("sample_name",grpVar),with=F]), design= as.formula(sprintf("~ %s", grpVar)))
+# Using similar setting as Florian: dds <- DESeq(dds, test="Wald", fitType="local", betaPrior=T)
+#A <- DESeq2::DESeq(atacDDS)
+#B <- DESeq2::DESeq(atacDDS, test="Wald", fitType="local", betaPrior=T)  # why these parameters?
+#identical(A, B)  # FALSE
+#summary(results(A))
+#summary(results(B))  # more results
+#attr(A, "betaPriorVar")
+#attr(B, "betaPriorVar")
+
+# what dispersion is expected for ATAC-seq?
+# plotDispEsts(A)
+# plotDispEsts(B)
+
+# further compare
+#atacDDS <- DESeq2::DESeq(atacDDS, test="Wald", fitType="local", betaPrior=T)
+
+# here they also run withut betaPrior? check version!
+# https://github.com/Zhang-lab/ATACseq_benchmarking/blob/master/simulated_ATAC_tests_DESeq2.R
+# https://support.bioconductor.org/p/95436/
+# https://support.bioconductor.org/p/68772/
+# https://bioinformatics.stackexchange.com/questions/10837/loss-and-gain-of-region-in-atac-seq
+#https://support.bioconductor.org/p/103348/
+# also setting betaPrior=TRUE since no shrinking is done aferwards; https://support.bioconductor.org/p/118257/
+atacDDS <- DESeq2::DESeq(atacDDS, test="Wald", fitType="local", betaPrior=TRUE)  # set local as in Diffbind; see manual and 
+
+atac_Rlog <- rlog(atacDDS)
+DESeq2::plotPCA(atac_Rlog, intgroup = "sample_group", ntop = nrow(atac_Rlog))
+
+# With the new DESeq2 object we can now test for any differences in ATACseq signal between groups.
+
+DESeq2::resultsNames(atacDDS)
+
+# extracting differential accessibility results ----
+# contrasts
+# patient_vs_NDs c("sample_group", "Patient", "ND")
+# clone_vs_NDs c("sample_group", "Clone", "ND")
+# clone_vs_patient c("sample_group", "Clone", "Patient")
+
+de_comparisons <- list(patient_vs_NDs = c("sample_group", "Patient", "ND"),
+                       clone_vs_NDs = c("sample_group", "Clone", "ND"),
+                       clone_vs_patient = c("sample_group", "Clone", "Patient"))
+
+#future::plan(future::multisession, workers = 4)
+
+log2FC_cutoff <- log2(1.5)
+# within promoters
+# using 1000 as in Florian's code
+# not using 500 as in the tutorial
+promoter_dist <- 1000
+toOverLap <- GenomicFeatures::promoters(txdb, promoter_dist, promoter_dist)  
+# potentially increase to 3000 as in http://bioconductor.org/packages/devel/bioc/vignettes/ChIPseeker/inst/doc/ChIPseeker.html#peak-heatmaps
+# - [ ] However, above still gives some non-promoter sequences; filter further before enrichment?
+# - [ ] see priorities in ChIPseeker annotation
+
+de_results <- purrr::map(.x = names(de_comparisons), .f = function(comparison_name){
+  # extract DE results
+  #   run annotation
+  # extract significant - UP, DOWN
+  #   run annotation
+  #   run GO enrichment
+  
+  message(paste0("Processing comparison: ", comparison_name))
+  
+  # extract DE results
+  #   run annotation
+  temp_contrast <- de_comparisons[[comparison_name]]
+  de_results <- DESeq2::results(atacDDS, contrast = temp_contrast, format = "GRanges")
+  de_results <- de_results[order(de_results$pvalue)] # order based on p-value
+  
+  de_results_annot <- ChIPseeker::annotatePeak(peak = de_results,
+                                            tssRegion=c(-3000, 3000),
+                                            TxDb=txdb, 
+                                            level = "transcript",
+                                            annoDb="org.Hs.eg.db")
+  
+  de_results_annot_df <- as.data.frame(de_results_annot) %>%
+    dplyr::arrange(pvalue)  # ordered by p-value
+  
+  #   run annotation
+  # extract significant - UP, DOWN
+  #   run annotation
+  #   run GO enrichment
+  # significant based on log2FC
+  de_results_signif <- de_results[(!is.na(de_results$padj) & 
+                                            abs(de_results$log2FoldChange) > log2FC_cutoff) & de_results %over% toOverLap, ]
+
+  de_results_signif_annot <- ChIPseeker::annotatePeak(peak = de_results_signif,
+                                                      tssRegion=c(-3000, 3000),
+                                                      TxDb=txdb, 
+                                                      annoDb="org.Hs.eg.db")
+
+  de_results_signif_annot_df <- as.data.frame(de_results_signif_annot) %>%
+    dplyr::arrange(pvalue)  # ordered by p-value
+
+  #plotAnnoPie(res_patient_vs_ND_signif_annot)
+
+  de_results_signif_annot_df_UP <- de_results_signif_annot_df %>%
+    dplyr::filter(log2FoldChange > 1)
+  de_results_signif_annot_df_DOWN <- de_results_signif_annot_df %>%
+    dplyr::filter(log2FoldChange < 1)
+  
+  message("de_results_signif_annot_df_UP genes: ", nrow(de_results_signif_annot_df_UP))
+  message("de_results_signif_annot_df_DOWN genes: ", nrow(de_results_signif_annot_df_DOWN))
+
+  signif_UP_goEnrichment <- clusterProfiler::enrichGO(unique(de_results_signif_annot_df_UP$geneId), 
+                                                                        OrgDb = "org.Hs.eg.db", 
+                                                                        ont = "BP", 
+                                                                        maxGSSize = 5000)
+  signif_UP_goEnrichment_df <- as.data.frame(signif_UP_goEnrichment)
+  
+  signif_DOWN_goEnrichment <- clusterProfiler::enrichGO(unique(de_results_signif_annot_df_DOWN$geneId), 
+                                                                          OrgDb = "org.Hs.eg.db", 
+                                                                          ont = "BP", 
+                                                                          maxGSSize = 5000)
+  signif_DOWN_goEnrichment_df <- as.data.frame(signif_DOWN_goEnrichment)
+  
+  return(list(de_results_annot = de_results_annot,
+              de_results_annot_df = de_results_annot_df,
+              de_results_signif_annot = de_results_signif_annot,
+              de_results_signif_annot_df = de_results_signif_annot_df,
+              signif_UP_goEnrichment = signif_UP_goEnrichment,
+              signif_UP_goEnrichment_df = signif_UP_goEnrichment_df,
+              signif_DOWN_goEnrichment = signif_DOWN_goEnrichment,
+              signif_DOWN_goEnrichment_df = signif_DOWN_goEnrichment_df))
+  
+}) %>% setNames(names(de_comparisons))
+
+
+patient_vs_NDs_results <- de_results$patient_vs_NDs
+patient_vs_NDs_results <- patient_vs_NDs_results[!names(patient_vs_NDs_results) %in% c("de_results_annot", "de_results_signif_annot", "signif_UP_goEnrichment", "signif_DOWN_goEnrichment")]
+
+clone_vs_NDs_results <- de_results$clone_vs_NDs
+clone_vs_NDs_results <- clone_vs_NDs_results[!names(clone_vs_NDs_results) %in% c("de_results_annot", "de_results_signif_annot", "signif_UP_goEnrichment", "signif_DOWN_goEnrichment")]
+
+clone_vs_patient_results <- de_results$clone_vs_patient
+clone_vs_patient_results <- clone_vs_patient_results[!names(clone_vs_patient_results) %in% c("de_results_annot", "de_results_signif_annot", "signif_UP_goEnrichment", "signif_DOWN_goEnrichment", "signif_UP_goEnrichment_df")] # added also signif_UP_goEnrichment_df since it was empty and openxlsx::write.xlsx was throwing error
+
+# install.packages("writexl")
+openxlsx::write.xlsx(x = patient_vs_NDs_results, 
+                     file = paste0(out_dir, "/patient_vs_NDs_results.xlsx"),
+                     asTable = TRUE) 
+
+openxlsx::write.xlsx(x = clone_vs_NDs_results, 
+                     file = paste0(out_dir, "/clone_vs_NDs_results.xlsx"),
+                     asTable = TRUE) 
+
+openxlsx::write.xlsx(x = clone_vs_patient_results, 
+                     file = paste0(out_dir, "/clone_vs_patient_results.xlsx"),
+                     asTable = TRUE) 
+
+# annotations 
+ChIPseeker::vennpie(de_results$patient_vs_NDs$de_results_annot)
+#install.packages(c("ggupset", "ggplotify"))
+ChIPseeker::upsetplot(de_results$patient_vs_NDs$de_results_annot, vennpie=TRUE)
+ChIPseeker::plotDistToTSS(de_results$patient_vs_NDs$de_results_annot,
+              title="Distribution of transcription factor-binding loci\nrelative to TSS")
+
+# Overlap of peaks and annotated genes
+peakAnnoList <- lapply(project_metadata$narrowPeak_files, 
+                       ChIPseeker::annotatePeak, 
+                       TxDb=txdb,
+                       annoDb="org.Hs.eg.db",
+                       tssRegion=c(-3000, 3000), verbose=FALSE)
+
+names(peakAnnoList) <- project_metadata$sample_name
+
+plotAnnoBar(peakAnnoList)
+plotDistToTSS(peakAnnoList)
+
+compare_genes = lapply(peakAnnoList, function(i) as.data.frame(i)$geneId)
+names(compare_genes) = sub("_", "\n", names(compare_genes))
+compKEGG <- clusterProfiler::compareCluster(geneCluster   = compare_genes,
+                         fun           = "enrichKEGG",
+                         pvalueCutoff  = 0.005,
+                         pAdjustMethod = "BH")
+clusterProfiler::dotplot(compKEGG, showCategory = 15, title = "KEGG Pathway Enrichment Analysis")
+
+ChIPseeker::vennplot(compare_genes)
+
+# overlap_enrich <- ChIPseeker::enrichPeakOverlap(queryPeak = project_metadata$narrowPeak_files[[4]],
+#                                                 targetPeak    = unlist(project_metadata$narrowPeak_files[1:3]),
+#                                                 TxDb          = txdb,
+#                                                 pAdjustMethod = "BH",
+#                                                 nShuffle      = 1000,
+#                                                 chainFile     = NULL,
+#                                                 verbose       = FALSE)
+
+# - [ ] overlap of significant results?!
+# - [ ] run DE for each of the ND individually?
+# - [ ] enrichment of peaks before DE analysis?
+
+
+# save results
+
+# plot overlaps between results?!
+
+#future::plan(future::sequential)
+
+
+# comparing Patient_vs_ND
+#res_patient_vs_ND_res <- DESeq2::results(atacDDS, contrast = c("sample_group", "Patient", "ND"), format="DataFrame")  # tidy=TRUE does not work?!
+#res_patient_vs_ND_res
+#summary(res_patient_vs_ND_res)
+#res_patient_vs_ND_res_df <- as.data.frame(res_patient_vs_ND_res)
+res_patient_vs_ND <- DESeq2::results(atacDDS, contrast = c("sample_group", "Patient", "ND"), format = "GRanges")
+res_patient_vs_ND <- res_patient_vs_ND[order(res_patient_vs_ND$pvalue)] # order based on p-value
+#res_patient_vs_ND <- res_patient_vs_ND[order(abs(res_patient_vs_ND$log2FoldChange), decreasing = TRUE)] # order based on log2FC?
+
+# drop sequence names!!!
+# condition_group Patient vs ND
+head(res_patient_vs_ND)
+
+# from Florian's differential.R
+# 	d <- log2(DESeq2::counts(dds, normalized=TRUE, replaced=TRUE)+1)
+#	write.table(d, file=resultsDir("atac_peak_intensities.csv"), sep=",", col.names=NA, row.names=T)
+# lib$pdfPlot("boxplots_counts_norm", 6, 15)
+# par(mfrow=c(2,1))
+# boxplot(log2(dCounts+1), las=3, main="counts")
+# boxplot(d, las=3, main="deseq2")
+# dev.off()
+
+# boxplot(log2(assay(myCounts)+1), las=3, main="counts")
+# boxplot(log2(DESeq2::counts(atacDDS, normalized=TRUE, replaced=TRUE)+1), las=3, main="deseq2")
+
+# annotate results ----
+res_patient_vs_ND_annot <- ChIPseeker::annotatePeak(peak = res_patient_vs_ND,
+                                                    tssRegion=c(-3000, 3000),
+                                                    TxDb=txdb, 
+                                                    level = "transcript",
+                                                    annoDb="org.Hs.eg.db")
+  
+plotAnnoPie(res_patient_vs_ND_annot)
+
+# res_patient_vs_ND_annot_df <- as.data.frame(res_patient_vs_ND_annot) %>%
+#   dplyr::select()
+
+
+# significant:
+#  do enrichment for around promoters and logFC larger than 1.5?
+sum(abs(res_patient_vs_ND$log2FoldChange) > log2FC_cutoff)
+
+res_patient_vs_ND_signif <- res_patient_vs_ND[(!is.na(res_patient_vs_ND$padj) & 
+    abs(res_patient_vs_ND$log2FoldChange) > log2FC_cutoff) & res_patient_vs_ND %over% toOverLap, ]
+
+res_patient_vs_ND_signif_annot <- ChIPseeker::annotatePeak(peak = res_patient_vs_ND_signif,
+                                                    tssRegion=c(-3000, 3000),
+                                                    TxDb=txdb, 
+                                                    annoDb="org.Hs.eg.db")
+
+res_patient_vs_ND_signif_annot_df <- as.data.frame(res_patient_vs_ND_signif_annot)
+
+plotAnnoPie(res_patient_vs_ND_signif_annot)
+
+res_patient_vs_ND_signif_UP <- res_patient_vs_ND_signif_annot_df %>%
+  dplyr::filter(log2FoldChange > 1)
+res_patient_vs_ND_signif_DOWN <- res_patient_vs_ND_signif_annot_df %>%
+  dplyr::filter(log2FoldChange < 1)
+
+res_patient_vs_ND_signif_UP_goEnrichment <- clusterProfiler::enrichGO(res_patient_vs_ND_signif_UP$geneId, 
+                                                                   OrgDb = "org.Hs.eg.db", 
+                                                                   ont = "BP", 
+                                                                   maxGSSize = 5000)
+res_patient_vs_ND_signif_UP_goEnrichment_df <- as.data.frame(res_patient_vs_ND_signif_UP_goEnrichment)
+
+res_patient_vs_ND_signif_DOWN_goEnrichment <- clusterProfiler::enrichGO(res_patient_vs_ND_signif_DOWN$geneId, 
+                                                                   OrgDb = "org.Hs.eg.db", 
+                                                                   ont = "BP", 
+                                                                   maxGSSize = 5000)
+res_patient_vs_ND_signif_DOWN_goEnrichment_df <- as.data.frame(res_patient_vs_ND_signif_DOWN_goEnrichment)
+
+# additional plots ----
+chipseek_promoters <- getPromoters(TxDb=txdb, upstream=promoter_dist, downstream=promoter_dist)
+# identical(chipseek_promoters, toOverLap) FALSE
+tmp_peak <- readPeakFile(project_metadata$narrowPeak_files[[1]])
+tmp_tagMatrix <- getTagMatrix(tmp_peak, windows=chipseek_promoters)
+# tagHeatmap(tmp_tagMatrix, xlim=c(-3000, 3000), color="red")
+# peakHeatmap(project_metadata$narrowPeak_files[[1]], TxDb=txdb, upstream=3000, downstream=3000, color="red")
+# plotAvgProf(tmp_tagMatrix, xlim=c(-3000, 3000),
+#             xlab="Genomic Region (5'->3')", ylab = "Read Count Frequency")
+# run also GSEA?!
+# create ranked list based on log2FC
+# identify motifs?!
+
+
+```
+
+```{r Finding Motifs, include=FALSE, eval=FALSE}
+library(MotifDb)
+library(Biostrings)
+library(BSgenome.Hsapiens.UCSC.hg38)
+library(seqLogo)
+
+# - [ ] extract .bed files for visualization
+# - [ ] prepare IGV sessions?!
+# - [ ] CHEA database???
+# - [ ] add genes of iterest
+genes_interest <- c("IKZF1", "IKZF2", "NFAT5", "NFATC1", "NFATC2", "NFATC3", "NFATC4", "NFKB")
+
+# http://jaspar.genereg.net/
+# AP1 - alias for JUN https://www.genecards.org/cgi-bin/carddisp.pl?gene=JUN
+
+
+CTCF <- query(MotifDb, c("CTCF")) 
+CTCF
+
+names(CTCF)
+
+ctcfMotif <- CTCF[["Hsapiens-HOCOMOCOv10-CTCFL_HUMAN.H10MO.A"]]
+ctcfMotif[, 1:4]
+
+
+seqLogo(ctcfMotif)
+
+# IKZF1 and IKZF2
+IKZF1 <- query(MotifDb, c("IKZF1")) 
+IKZF1_IKAROS <- query(MotifDb, c("IKAROS")) # ?? one match points to one of the above resource: Hsapiens-HOCOMOCOv11-core-C-IKZF1_HUMAN.H11MO.0.C
+IKZF2 <- query(MotifDb, c("IKZF2")) 
+# IKZF2_HELIOS <- query(MotifDb, c("HELIOS")) # NULL
+JUN <- query(MotifDb, c("JUN"))  #  there are multiple JUN entries
+ 
+
+
+IKZF1
+IKZF2
+
+names(IKZF1)
+names(IKZF2)
+
+ikzf1_jaspar_Motif <- IKZF1[["Hsapiens-HOCOMOCOv10-IKZF1_HUMAN.H10MO.C"]]
+ikzf1_Motif <- IKZF1[["Hsapiens-SwissRegulon-IKZF1.SwissRegulon"]]
+ikzf2_Motif <- IKZF2[["Hsapiens-SwissRegulon-IKZF2.SwissRegulon"]]
+
+ikzf1_Motif[, 1:4]
+ikzf2_Motif[, 1:4]
+
+seqLogo(ikzf1_jaspar_Motif)
+seqLogo(ikzf1_Motif)
+seqLogo(ikzf2_Motif)
+
+mainChromosomes <- paste0("chr", c(1:22, "X", "Y", "M"))
+#myRes <- matchPWM(ctcfMotif, BSgenome.Hsapiens.UCSC.hg38[["chr20"]])
+ikzf1_pwm <- Biostrings::matchPWM(ikzf1_jaspar_Motif, BSgenome.Hsapiens.UCSC.hg38)
+#https://support.bioconductor.org/p/123489/
+# not working: ikzf1_pwm <- Biostrings::matchPWM(ikzf1_jaspar_Motif, Biostrings::getSeq(BSgenome.Hsapiens.UCSC.hg38, mainChromosomes))
+# Views: https://kasperdanielhansen.github.io/genbioconductor/html/BSgenome_Views.html
+# https://monashbioinformaticsplatform.github.io/r-more/topics/sequences_and_features.html
+# not working: ikzf1_pwm <- Biostrings::matchPWM(ikzf1_jaspar_Motif, IRanges::Views(Biostrings::getSeq(BSgenome.Hsapiens.UCSC.hg38, mainChromosomes)))
+# https://www.biostars.org/p/351377/
+# https://seandavi.github.io/ITR/RangesAndSignal.html
+seqnames(ikzf1_pwm)
+#q_gr=GRanges(seqnames=Rle(mainChromosomes))
+#ikzf1_pwm2 <- GenomeInfoDb::keepStandardChromosomes(ikzf1_pwm)
+#ikzf1_pwm3 <- GenomeInfoDb::keepSeqlevels(ikzf1_pwm, value = mainChromosomes,pruning.mode="coarse") 
+# identical(ikzf1_pwm2, ikzf1_pwm3) # TRUE
+ikzf1_pwm <- GenomeInfoDb::keepStandardChromosomes(ikzf1_pwm)
+seqnames(ikzf1_pwm)
+ikzf1_pwm
+
+
+# The result is a Views object, similar to the IRanges object. We convert
+#toCompare <- GRanges("chr20", ranges(ikzf1_pwm))
+toCompare <- ikzf1_pwm
+toCompare
+
+# Shifting reads for cut-sites
+
+
+# seqlev <- "chr1" ## subsample data for quick run
+# which <- as(seqinfo(Hsapiens)[seqlev], "GRanges")
+# gal <- readBamFile(bamfile, tag=tags, which=which, asMates=TRUE)
+# #shift the GAlignmentsLists by 5' ends. All reads aligning to the positive strand will be offset by +4bp, and all reads aligning to the negative strand will be offset -5bp by default.
+# gal1 <- shiftGAlignmentsList(gal)
+# shiftedBamfile <- file.path(splited_dir, "shifted.bam")
+
+#BAM <- "~/Downloads/ATAC_Workshop/ATAC_Data/ATAC_BAM/Sorted_ATAC_50K_2_openRegions.bam"
+#atacReads_Open <- GenomicAlignments::readGAlignmentPairs(project_metadata$bam_files[1])
+#mainChromosomes <- paste0(c(1:22, "X", "Y", "M"))
+atacReads_Open <- GenomicAlignments::readGAlignments(project_metadata$bam_files[1])
+class(atacReads_Open)
+#read1 <- GenomicAlignments::first(atacReads_Open)
+#read2 <- GenomicAlignments::second(atacReads_Open)
+#read2[1, ]
+atacReads_Open[1, ]
+
+length(atacReads_Open)
+reads_toCut <- GenomicRanges::resize(granges(atacReads_Open), fix = "start", 1)
+length(reads_toCut)
+# reads_Pos_toCut <- GenomicRanges::shift(granges(reads_toCut[strand(atacReads_Open) == "+"]), 4)
+# reads_Neg_toCut <- GenomicRanges::shift(granges(reads_toCut[strand(atacReads_Open) == "-"]), -5)
+reads_Pos_toCut <- GenomicRanges::shift((reads_toCut[strand(atacReads_Open) == "+"]), 4)
+reads_Neg_toCut <- GenomicRanges::shift((reads_toCut[strand(atacReads_Open) == "-"]), -5)
+
+# drop not main chromosomes
+reads_Pos_toCut <- GenomeInfoDb::keepSeqlevels(reads_Pos_toCut, value = mainChromosomes,pruning.mode="coarse") 
+reads_Neg_toCut <- GenomeInfoDb::keepSeqlevels(reads_Neg_toCut, value = mainChromosomes,pruning.mode="coarse") 
+
+test_toCut <- c(reads_Pos_toCut, reads_Neg_toCut)
+test_toCut[1:2, ]
+
+#Coverage for cut-sites
+#Now we can use the GRanges of cut-site positions to produce an RLElist of cut-sites across the genome using the coverage() function.
+
+cutsCoverage <- GenomicRanges::coverage(test_toCut)
+cutsCoverage20 <- cutsCoverage["chr20"]
+cutsCoverage20[[1]]
+
+#Plotting for cut-sites
+#We can use an RLElist with soGGi to produce a plot of cut-sites around our discovered 'CTCF' motifs.
+#We change the format to rlelist and the distanceAround parameter to 500bp.
+# CTCF_Cuts_open <- regionPlot(cutsCoverage20, testRanges = toCompare, style = "point", 
+#     format = "rlelist", distanceAround = 500)
+# ikzf1_jaspar_Motif
+ikzf1_Cuts_open <- soGGi::regionPlot(cutsCoverage, 
+                                     testRanges = toCompare, 
+                                     style = "point", 
+                                     format = "rlelist", 
+                                     distanceAround = 500)
+
+#plotRegion(CTCF_Cuts_open, outliers = 0.001) + ggtitle("NucFree Cuts Centred on CTCF") + theme_bw()
+soGGi::plotRegion(ikzf1_Cuts_open, outliers = 0.001) + ggtitle("Cuts Centred on IKZF1") + theme_bw()  # "NucFree Cuts Centred on CTCF"
+
+
+# TFBSTools for TFs
+library(MotifDb)
+library(JASPAR2020)
+library(TFBSTools)
+IKZF1mat <- getMatrixByName(JASPAR2020, "IKZF1")
+class(IKZF1mat)
+ID(IKZF1mat)
+
+# Position Frequency Matrix
+myMatrix <- Matrix(IKZF1mat)
+myMatrixToo <- as.matrix(myMatrix)
+myMatrix
+
+seqLogo::seqLogo(ikzf1_Motif, ic.scale = FALSE)
+
+# Visualizing motifs
+# 
+# We can convert our point frequency matrix to a point probabilty matrix by simply dividing columns by their sum.
+ppm <- myMatrix/colSums(myMatrix)
+ppm
+
+seqLogo::seqLogo(ppm)
+IKZF1_IC <- toICM(IKZF1mat)
+TFBSTools::seqLogo(IKZF1_IC)
+
+library(ggseqlogo)
+library(ggplot2)
+ggseqlogo(myMatrix) + theme_minimal()
+
+# TFBSTools for motif sets
+
+
+# Identifying Motifs in ATACs-seq ---
+#First we can retrieve a sensible set of motifs to scan for within our mouse tissue ATACseq data.
+#Here we retrieve the vertebrate, JASPAR CORE motifs. We additional specify all_versions is FALSE to only include the latest version of a motif.
+
+#?getMatrixSet
+opts <- list()
+opts[["tax_group"]] <- "vertebrates"
+opts[["species"]] <- "9606"
+opts[["collection"]] <- "CORE"
+opts[["all_versions"]] <- FALSE
+motifsToScan <- getMatrixSet(JASPAR2020, opts)
+
+#motifmatchr
+#The motifmatchr package main function is matchMotifs().
+#As with many Bioconductor functions , matchMotifs makes use of other Bioconductor objects such the BSGenome, GRanges and summarizedExperiment objects.
+#We can review the full functionality by reading the help for matchMotifs, ?matchMotifs.
+
+# https://bioconductor.org/packages/release/bioc/vignettes/motifmatchr/inst/doc/motifmatchr.html
+# Get motif matches for example motifs in peaks
+
+
+# We can retrieve the ranges of our peaks directly from our SummarizedExperiment object by using the standard accessor rowRanges.
+peakRanges <- rowRanges(myCounts)
+
+# getSeq() function to extract sequences from a BSGenome object using a GRanges object to define the regions of interest
+peakRangesCentered <- resize(peakRanges, fix = "center", width = 100)
+peakSeqs <- getSeq(BSgenome.Hsapiens.UCSC.hg38, peakRangesCentered)
+names(peakSeqs) <- as.character(peakRangesCentered)
+peakSeqs
+
+# Finding motif positions ----
+# The matchMotifs function can provide output of motif matches as matches, scores or positions.
+library(motifmatchr)
+#motif_positions <- motifmatchr::matchMotifs(motifsToScan[1:4], peakSeqs[1:100], out = "positions")
+#motif_positions <- motifmatchr::matchMotifs(motifsToScan, peakSeqs, out = "positions")
+#class(motif_positions)
+#length(motif_positions)
+
+# "matches"; "scores" = "matches" + extra
+#A <- motifmatchr::matchMotifs(motifsToScan[1:4], peakSeqs[1:100], out = "positions")
+#B <- motifmatchr::matchMotifs(motifsToScan[1:4], peakSeqs[1:100], out = "scores")
+  
+# get motif counts
+#  use score in the above?
+print(B)
+C <- motifmatchr::motifCounts(B)
+D <- motifmatchr::motifScores(B)
+
+# The result contains a list of the same length as the number of motifs tested.
+# Each element contains a IRangeslist with an entry for every sequence tested and a IRanges of motif positions within the peak sequences.
+# We can unlist our IRangeslist to a standard list for easier working.
+# MA1508.1 - IKZF1
+MA1508hits <- motif_positions$MA1508.1
+names(MA1508hits) <- names(peakSeqs)
+unlist(MA0029hits, use.names = TRUE)
+
+# Finding motif hits ----
+# We may simply want to map motifs to their ATACseq peaks.
+# To do this we can set the out parameter to matches. This will return a SummarizedExperiment object.
+motifHits <- motifmatchr::matchMotifs(motifsToScan, peakSeqs, out = "matches")
+motifHits_scores <- motifmatchr::matchMotifs(motifsToScan, peakSeqs, out = "scores")
+class(motifHits)
+motifHits
+
+MotifCount_tmp <- motifmatchr::motifCounts(motifHits_scores)
+dim(MotifCount_tmp)
+MotifCount_tmp[1:8, 1:8]
+totalMotifOccurence_tmp <- colSums(MotifCount_tmp)
+totalMotifOccurence_tmp_ordered <- totalMotifOccurence_tmp[order(totalMotifOccurence_tmp, decreasing = TRUE)]
+
+# We can retrieve a matrix of matches by motif and peak using the motifMatches function.
+mmMatrix <- motifmatchr::motifMatches(motifHits)
+dim(mmMatrix)
+mmMatrix[1:8, 1:8]
+
+# Although a sparse matrix, we can still use our matrix operations to extract useful information from this object.
+# We can use the colSums() to identify the total occurrence of motifs in our peak sequences.
+totalMotifOccurence <- colSums(mmMatrix)
+totalMotifOccurence[1:4]
+
+totalMotifOccurence_ordered <- totalMotifOccurence[order(totalMotifOccurence, decreasing = TRUE)]
+
+identical(totalMotifOccurence_tmp_ordered, totalMotifOccurence_ordered)  # FALSE?!!!
+
+totalMotifOccurence_ordered_names <- purrr::map(.x = names(totalMotifOccurence_ordered), .f = function(jaspar_id){
+  TFBSTools::getMatrixByID(JASPAR2020, jaspar_id)
+}) %>% setNames(names(totalMotifOccurence_ordered))
+length(totalMotifOccurence_ordered_names)
+
+motif_top_occurence_name <- TFBSTools::getMatrixByID(JASPAR2020, names(totalMotifOccurence_ordered[1]))
+class(motif_top_occurence_name)
+TFBSTools::ID(motif_top_occurence_name)
+TFBSTools::name(motif_top_occurence_name)
+
+motif_top_occurence_name_IC <- TFBSTools::toICM(motif_top_occurence_name)
+TFBSTools::seqLogo(motif_top_occurence_name_IC)
+
+# We can also identify peaks which contain a hit for a selected motif.
+peaksWithMA1508 <- peakRangesCentered[mmMatrix[, "MA1508.1"] == 1]
+peaksWithMA1508
+
+# summarizing ATAC signal to Motifs ----
+# The chromVar package allows for the summarization of ATACseq signal changes to the motifs within peaks.
+# With this summarization we can potentially identify which motifs may have an important role in a set of ATAC samples compared to other samples.
+# The chromVar package comes from the same lab and author as the motifmatchr package and so will work well together.
+library(chromVAR)
+
+# Setting up for chromVar ----
+#To identify motifs for chomVar we will use motifMatchr with a different set of inputs.
+#Here we will provide our RangedSummarizedExperiment object contaitng our counts over peaks directly to the matchMotifs function.
+
+#First we will remove any peaks with less than 5 reads across all samples.
+dim(myCounts)
+myCounts_filt <- myCounts[rowSums(assay(myCounts)) > 5, ]
+dim(myCounts_filt)
+
+
+#Correct GC bias ---
+
+#Next we can correct for any potential GC bias which may have arisen in sequencing. 
+# - there seems to be no GC bias so probably not needed. But check initial QC using also ChIPQC packageS?
+
+#For comparing across differing sets of peaks with differing sequences compositions we will need to correct for this bias. We can use the addGCBias and specify our genome as a BSgenome object to correct in chromVar.
+# Computes GC content for peaks
+myCounts_filt <- chromVAR::addGCBias(myCounts_filt, genome = BSgenome.Hsapiens.UCSC.hg38)
+
+# ID motifs in peaks ----
+
+# Having corrected for bias, we can use the matchMotifs function again to identify motifs under our ATACseq peaks.
+# Here we supply our RangedSummarizedExperiment of counts in peaks and the genome of interest to the matchMotifs function and use the default out of matches.
+
+motif_ix <- motifmatchr::matchMotifs(pwms = motifsToScan, 
+                                     subject = myCounts_filt, 
+                                     genome = BSgenome.Hsapiens.UCSC.hg38)
+motif_ix
+
+# Run chromVar ----
+
+#Following the identification of motifs in our peaks, we can perform the summarization of ATACseq signal to motifs using the computeDeviations and the computeVariability functions.
+
+# Computes deviations in chromatin accessibility across sets of annotations
+# https://bioconductor.org/packages/release/bioc/vignettes/chromVAR/inst/doc/Introduction.html
+library(BiocParallel)
+register(MulticoreParam(8, progressbar = TRUE))
+#register(SerialParam())
+
+# deviations
+# The function computeDeviations returns a SummarizedExperiment with two “assays”. The first matrix (accessible via deviations(dev) or assays(dev)$deviations) will give the bias corrected “deviation” in accessibility for each set of peaks (rows) for each cell or sample (columns). This metric represent how accessible the set of peaks is relative to the expectation based on equal chromatin accessibility profiles across cells/samples, normalized by a set of background peak sets matched for GC and average accessability. The second matrix (deviationScores(dev) or assays(deviations)$z) gives the deviation Z-score, which takes into account how likely such a score would occur if randomly sampling sets of beaks with similar GC content and average accessibility.
+
+# The deviations result contains a SummarizedExperiment object with the Z-scores showing the enrichment for ATACseq signal in each sample for every motif.
+
+chrom_access_deviations <- chromVAR::computeDeviations(object = myCounts_filt, annotations = motif_ix)
+# adding samples names
+colData(chrom_access_deviations) <- colData(atacDDS)  # check if order of samples is the same between chrom_access_deviations and atacDDS
+
+chromVAR::deviations(chrom_access_deviations)
+devZscores <- chromVAR::deviationScores(chrom_access_deviations)
+devZscores[1:2, ]
+
+pheatmap::pheatmap(devZscores, scale = "none")
+
+# visualizing deviations
+tsne_dev_results <- chromVAR::deviationsTsne(chrom_access_deviations, threshold = 1.5, perplexity = 10)
+
+tsne_plots <- chromVAR::plotDeviationsTsne(chrom_access_deviations, 
+                                           tsne_dev_results, 
+                                           annotation_name = "IKZF1", 
+                                           sample_column = "sample_group", 
+                                           shiny = FALSE)
+tsne_plots[[1]]
+
+# variability 
+#The function computeVariability returns a data.frame that contains the variability (standard deviation of the z scores computed above across all cell/samples for a set of peaks), bootstrap confidence intervals for that variability (by resampling cells/samples), and a p-value for the variability being greater than the null hypothesis of 1.
+
+# The variability result contains the ranking of motifs by their variability across samples. Highly variable motifs may indicate motifs associated with a particular sample group or variable across all groups.
+
+chrom_access_variability <- chromVAR::computeVariability(chrom_access_deviations)
+register(SerialParam())
+
+chromVAR::plotVariability(variability, use_plotly = FALSE) 
+
+chrom_access_variability_ord <- chrom_access_variability[order(chrom_access_variability$p_value), ]
+chrom_access_variability_ord[1:10, ]
+
+plotVariability(chrom_access_variability, use_plotly = FALSE) 
+
+# chromVar results ----
+# We can use the results from the variability with our Z-score deviations to identify in which sample our motifs are enriched.
+ntop <- 50
+topVariable <- chrom_access_variability_ord[1:ntop, ]
+topVariable <- tibble::rownames_to_column(topVariable, var="jaspar_id")
+devZscores_df <- tibble::rownames_to_column(as.data.frame(devZscores), var="jaspar_id")
+
+#devTop <- merge(topVariable[, 1, drop = FALSE], devZscores, by = 0)  # by = 0 - rownames; but gives random order?!
+devTop <- topVariable %>%
+  dplyr::left_join(., devZscores_df, by = "jaspar_id")
+devTop[1:2, ]
+
+# A useful way to visualize these results is using a heatmap. Although we cover this in a later session, here we can use the pheatmap library with default settings to illustrate where our most variable motifs are active.
+#devToPlot <- as.matrix(devTop[, -c(1:2)])
+devToPlot <- devTop %>%
+  dplyr::select(name, ND_01, ND_02, Patient, Clone_D8) %>%
+  tibble::column_to_rownames(var = "name")
+#rownames(devToPlot) <- devTop[, 2]
+#library(pheatmap)
+#pheatmap::pheatmap(devToPlot, scale="none", cluster_cols = FALSE)
+motif_dev_heatmap <- ComplexHeatmap::pheatmap(as.matrix(devToPlot), scale="none", cluster_cols = FALSE)
+
+# Identifying Motifs de novo in ATAC ----
+# colData(myCounts) <- DataFrame(data.frame(Group, row.names = colnames(myCounts)))
+# dds <- DESeqDataSet(myCounts, design = ~Group)
+# dds <- DESeq(dds)
+# already calculated in the previous step!
+
+
+myRes  <- res_patient_vs_ND
+upRegions <- myRes[myRes$log2FoldChange > 0][1:1000]
+downRegions <- myRes[myRes$log2FoldChange < 0, ][1:1000]
+upRegions
+
+# Resize peaks
+# For Meme-ChIP we will want to resize the regions to 100bp. By default Meme-ChIP will perform this trimming for us but to ensure it is in the centre we will do this upfront.
+upRegions <- resize(upRegions, fix = "center", width = 100)
+downRegions <- resize(downRegions, fix = "center", width = 100)
+
+# Peak sequences
+
+# We can now use the getSeq function as previously to extract the signal from around within the GRange regions and write to a FASTA file for use in Meme-ChIP using the writeXStringSet function.
+
+upStrings <- getSeq(BSgenome.Hsapiens.UCSC.hg38, upRegions)
+downStrings <- getSeq(BSgenome.Hsapiens.UCSC.hg38, downRegions)
+names(upStrings) <- as.character(upRegions)
+names(downStrings) <- as.character(downRegions)
+Biostrings::writeXStringSet(upStrings, file = paste0(out_dir, "/PvsND_UpStrings.fa"))
+Biostrings::writeXStringSet(downStrings, file = paste0(out_dir, "/PvsND_DownStrings.fa"))
+
+#Meme-ChIP
+#We can then submit the sample to the Meme-ChIP online submission form found here.
+#In contrast to for ChIPseq, here we will run this in Differential mode to compare our sequences in Liver enriched regions to those depleted in Liver.
+
+# run https://meme-suite.org/meme/tools/meme-chip in 
+
+# Using De novo motifs ----
+# We may want to use the motifs discovered by Meme-ChIP in other Bioconductor software.
+# To do this we can use the universalmotif package.
+
+library(universalmotif)
+
+# Importing motifs
+# The universalmotif package provides lots of useful functions for importing motif sets.
+# One useful and relevant function is the read_meme() function.
+memeMotifs <- read_meme("/home/peter_r/results/chip_meme_results/combined.meme")
+memeMotifs
+
+#The universalmotif package also provides functions to convert between motif objects from different package. Here we convert to TFBStools motif objects.
+memeMotifsTFBStools <- universalmotif::convert_motifs(memeMotifs, "TFBSTools-PWMatrix")
+memeMotifsTFBStools
+
+memeMotifsTFBStools_ICmat <- universalmotif::convert_motifs(memeMotifs, "TFBSTools-ICMatrix")
+memeMotifsTFBStools_1st <- memeMotifsTFBStools_ICmat[[1]]
+TFBSTools::seqLogo(memeMotifsTFBStools_1st)
+
+```
+
+
+
+
+```{r functions, include=FALSE, eval=TRUE}
+############################
+### FUNCTION DEFINITIONS ###
+############################
+
+summarizeReads <- function(regs, sample.names, file.paths, useDuplicates=F) {
+  require("Rsamtools")
+  require("GenomicAlignments")
+	#loadLibraries(c("Rsamtools", "GenomicAlignments"))
+	
+	rblapply(1:length(sample.names), function(i) {
+		msg(sample.names[i])
+		so <- as.data.table(assay(summarizeOverlaps(features = regs, reads = BamFileList(file.paths[i], yieldSize = 5000000), ignore.strand = TRUE, singleEnd = TRUE, fragments = FALSE, param = ScanBamParam(flag = scanBamFlag(isDuplicate = useDuplicates)))))
+		setnames(so, c("count"))
+		so[,regNum:=1:nrow(so)]
+		so[,sampleName:=sample.names[i]]
+		so
+	}, "sampleNum")
+}
+
+loadUCSCRepeats <- function(regionDB=NULL) { 
+  require("LOLA")
+	#loadLibrary("LOLA")
+	stopifnot(requireNamespace("LOLA"))
+	
+	# Grab a single region set from a database, specified by filename.
+	repeats <- LOLA::getRegionSet(regionDB = regionDB, collections="ucsc_features", "rmsk.bed")[[1]]
+	return(repeats)
+}
+
+# define a color as a weighted mixture of pre-defined colors (used to get colors for regulatory modules by cell types in which they are accessible):
+makeColor <- function(x, annot=dA, grpBy="sample_group", cols=colorPalettes[[grpBy]]) {
+	grps <- annot[,get(grpBy)]
+	x <- sapply(split(x, f=grps), mean)
+	x <- x-min(x)
+	x <- (x/max(x)*10)^2	
+	grps <- unique(grps)
+	alpha(lib$blendColors(unlist(sapply(1:length(grps), function(i) rep(cols[grps[i]], round(x[i]))))), 1)
+}
+writeFASTA <- function(sequences, sequenceFile) {
+	msg("\t* create input file: ", sequenceFile)
+	tmp <- paste0(rep(">seq", length(sequences)*2), floor(1:(length(sequences)*2) / 2 +1))
+	tmp[seq(2,length(tmp),by=2)] <- as.character(sequences)
+	write.table(tmp, file=sequenceFile, sep="\t", col.names=FALSE, row.names=FALSE, quote=FALSE)
+	sequenceFile
+}
+readFIMOResult <- function(fimoResultFile, motifFile=paste0(Sys.getenv("RESOURCES"),"/motifs/motif_databases_feb2017/JASPAR/JASPAR_CORE_2016_vertebrates.meme"), nSeqs=NULL, motifPThresh=0.05) {
+	cmd <- paste("grep 'MOTIF '",motifFile)
+	msg(cmd)
+	motifNames <- tryCatch(lib$dt2namedVec(fread(cmd, select=c(2,3), header=FALSE), "V2"), error=function(e) {
+		tmp <- fread(cmd, select=c(2), header=FALSE)
+		structure(tmp[,V2], names=tmp[,V2])
+	})
+	
+	dt <- fread(fimoResultFile, select=c(1,3,8))
+		
+	if(is.null(nSeqs)) nSeqs <- dt[,length(unique(sequence_name))]
+	dt[, motifName:=motifNames[motif_id]]
+
+	dt[`p-value`<=motifPThresh, .(seq=sequence_name, motifName, motifId=motif_id)]
+}
+runFIMO <- function(sequences, outFile="fimo_out.txt", motifP=1e-4, motifFile=paste0(Sys.getenv("RESOURCES"),"/motifs/motif_databases_feb2017/JASPAR/JASPAR_CORE_2016_vertebrates.meme"), params="--no-qvalue --text --bgfile motif-file", fimoExec= toolsDir("meme/bin/fimo"), inputIsFile=length(sequences)==1) {
+
+	dir.create(dirname(outFile), recursive=TRUE, showWarnings=FALSE)
+
+	if(!inputIsFile) {
+		sequenceFile <- writeFASTA(sequences, paste0(outFile, "_input.fasta"))
+	}
+	else {
+		msg("\t* use existing input file: ", sequences)
+		sequenceFile <- sequences
+	}
+
+	cmd <- paste(fimoExec,paste("--thresh",motifP), params,motifFile,sequenceFile,">",outFile)
+	msg("\t* run external tool: $ ", cmd)
+	system(cmd)
+
+	if(!inputIsFile) {
+		msg("\t* remove temporary input file: ", sequenceFile)
+		file.remove(sequenceFile)
+	}
+	
+	outFile
+}
+augmentLolaRes <- function(lolaResAll, qThresh=0.05, qvalCol="qvalMean", pvalCol="pvalMean", orCol="oddsRatioMean") {
+	lolaResAll[,log2odds:=log2(get(orCol))]
+	
+	# harmonize synonyms:
+	lolaResAll[,term:=antibody]
+	lolaResAll[is.na(term),term:=gsub("_\\(.+\\)$","",gsub("GSM\\d+_","",gsub("Human_","",gsub("wgEncode.wg","",gsub(".(bed|narrowPeak)","",filename)))))]
+	lolaResAll[collection=="sheffield_dnase", term:=paste0("DNase #",gsub(".bed","",filename), " (", sapply(strsplit(description,";"),function(x) paste(substr(x,1,3),collapse=";")), ")")]
+	lolaResAll[,term:=gsub("^(EGFP|C)\\W","",gsub("_\\(.+\\)$","",toupper(term)))]
+	lolaResAll[,term:=gsub("EP300", "P300", term)]
+	lolaResAll[,term:=gsub("PU\\.?1", "SPI1", term)]
+	lolaResAll[,term:=gsub("[−-]", "", term)]
+	lolaResAll[,term:=gsub("POL(II|LL)", "POL2", term)]
+	lolaResAll[,term:=gsub("POLIII", "POL3", term)]
+	lolaResAll[antibody%in%c("GR","NR3C1"), antibody:="NR3C1"]
+	lolaResAll[grepl("^E?P300",antibody,ignore.case=T), antibody:="EP300"]
+	lolaResAll[antibody%in%c("GABP"), antibody:="GABPA"]
+	lolaResAll[term=="P300",term:="EP300"]
+	lolaResAll[term=="ERALPHA_A",term:="ESR1"]
+	lolaResAll[term=="TCF7L2_C9B9",term:="TCF7L2"]
+
+	# kick out Pol2:
+	lolaResAll <- lolaResAll[!grepl("^POL",antibody,ignore.case=T),]
+
+	lolaResAll
+}
+curateRegionDb <- function(regionDB) {
+	capFirst <- function(str) paste0(toupper(substr(str, 1, 1)), substr(str, 2, nchar(str)))
+	regionDB$regionAnno[,cellType:=capFirst(gsub("(cell|progenitor|precursor|phage|cyte|blast)s","\\1", tolower(cellType), perl=TRUE))]
+	regionDB
+}
+matchLenient <- function(x, y) {
+	z <- x[sapply(x, function(xx) {
+		sum(sapply(y, function(yy) {
+					grepl(paste0("^",gsub("\\d+[ABCDEL]?$","",xx)), yy) || grepl(paste0("^",gsub("\\d+[ABCDEL]?$","",yy)), xx)
+		})>0)>0
+	})]
+	setdiff(z, paste0("SP",1:10))
+}
+
+
+```
+
+## Quality control and filtering {.tabset .tabset-pills}
+### Quality control
+
+```{QC summary, include=FALSE, eval=FALSE}
+Clone_D8_stats <- readr::read_tsv(file.path(input_dir, "Clone_D8/stats.tsv"))
+
+```
+
+```{r test case, include=FALSE, eval=FALSE}
+
+test_peaks_file = ""
+
+# input the bamFile from the ATACseqQC package 
+bamfile <- file.path(input_dir, "Clone_D8/aligned_hg38/Clone_D8_sort_dedup.bam")
+
+# BAM file name
+bamfile.labels <- gsub("_sort_dedup.bam", "", basename(bamfile))
+
+# generate fragement size distribution
+# not Paired-End file.
+#fragSize <- ATACseqQC::fragSizeDist(bamfile, bamfile.labels)
+
+#bamQC(bamfile, outPath=NULL)
+# not Paired-End file.
+#ATACseqQC::estimateLibComplexity(ATACseqQC::readsDupFreq(bamfile, index=bamfile))
+
+# Nucleosome positioning
+
+# Adjust read start position
+
+## bamfile tags to be read in
+possibleTag <- list("integer"=c("AM", "AS", "CM", "CP", "FI", "H0", "H1", "H2", 
+                                "HI", "IH", "MQ", "NH", "NM", "OP", "PQ", "SM",
+                                "TC", "UQ"), 
+                 "character"=c("BC", "BQ", "BZ", "CB", "CC", "CO", "CQ", "CR",
+                               "CS", "CT", "CY", "E2", "FS", "LB", "MC", "MD",
+                               "MI", "OA", "OC", "OQ", "OX", "PG", "PT", "PU",
+                               "Q2", "QT", "QX", "R2", "RG", "RX", "SA", "TS",
+                               "U2"))
+#library(Rsamtools)
+bamTop100 <- Rsamtools::scanBam(Rsamtools::BamFile(bamfile, yieldSize = 100),
+                     param = Rsamtools::ScanBamParam(tag=unlist(possibleTag)))[[1]]$tag
+tags <- names(bamTop100)[lengths(bamTop100)>0]
+tags
+
+## bamfile tags to be read in
+tags <- c("AS", "XN", "XM", "XO", "XG", "NM", "MD", "YS", "YT")
+
+## files will be output into outPath
+# outPath <- "splited"
+# dir.create(outPath)
+# ## shift the coordinates of 5'ends of alignments in the bam file
+# library(TxDb.Hsapiens.UCSC.hg19.knownGene)
+# ## if you don't have an available TxDb, please refer
+# ## GenomicFeatures::makeTxDbFromGFF to create one from gff3 or gtf file.
+# seqlev <- "chr1" ## subsample data for quick run
+# seqinformation <- seqinfo(TxDb.Hsapiens.UCSC.hg38.knownGene)
+# which <- as(seqinformation[seqlev], "GRanges")
+# gal <- readBamFile(bamfile, tag=tags, which=which, asMates=TRUE, bigFile=TRUE)
+# shiftedBamfile <- file.path(outPath, "shifted.bam")
+# gal1 <- shiftGAlignmentsList(gal, outbam=shiftedBamfile)
+
+## files will be output into outPath
+# splited_dir <- paste0(out_dir, "/splited")
+# dir.create(splited_dir)
+# 
+# ## shift the coordinates of 5'ends of alignments in the bam file
+# #BiocManager::install("BSgenome.Hsapiens.UCSC.hg38")
+# library("TxDb.Hsapiens.UCSC.hg38.knownGene")
+# 
+# seqlev <- "chr1" ## subsample data for quick run
+# which <- as(seqinfo(Hsapiens)[seqlev], "GRanges")
+# gal <- readBamFile(bamfile, tag=tags, which=which, asMates=TRUE)
+# 
+# #shift the GAlignmentsLists by 5' ends. All reads aligning to the positive strand will be offset by +4bp, and all reads aligning to the negative strand will be offset -5bp by default.
+# gal1 <- shiftGAlignmentsList(gal)
+# shiftedBamfile <- file.path(splited_dir, "shifted.bam")
+# export(gal1, shiftedBamfile)
+# 
+# f <- list.files(path = input_dir, pattern = )
+# f <- f[sapply(f, file.size)>0] # drop empty files
+# dA <- rblapply(f, fread, "annot_file")
+# 
+# dA[,peaks_file:=sprintf(dataDir("%s/peaks_redo_q0.1/%s_peaks.narrowPeak"), sample_name, sample_name)]
+# dA[,reads_file:=sprintf(dataDir("%s/mapped/%s.trimmed.bowtie2.filtered.bam"), sample_name, sample_name)]
+
+seqlev <- "chr1" ## subsample data for quick run
+seqinformation <- seqinfo(TxDb.Hsapiens.UCSC.hg38.knownGene)
+which <- as(seqinformation[seqlev], "GRanges")
+gal1 <- ATACseqQC::readBamFile(bamfile, tag=tags, which=which, asMates=FALSE, bigFile=TRUE)
+
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+txs <- transcripts(TxDb.Hsapiens.UCSC.hg38.knownGene)
+pt <- ATACseqQC::PTscore(gal1, txs)
+plot(pt$log2meanCoverage, pt$PT_score, 
+     xlab="log2 mean coverage",
+     ylab="Promoter vs Transcript")
+
+nfr <- ATACseqQC::NFRscore(gal1, txs)
+plot(nfr$log2meanCoverage, nfr$NFR_score, 
+     xlab="log2 mean coverage",
+     ylab="Nucleosome Free Regions score",
+     main="NFRscore for 200bp flanking TSSs",
+     xlim=c(-10, 0), ylim=c(-5, 5))
+
+tsse <- ATACseqQC::TSSEscore(gal1, txs)
+tsse$TSSEscore
+
+plot(100*(-9:10-.5), tsse$values, type="b", 
+     xlab="distance to TSS",
+     ylab="aggregate TSS score")
+
+```
+
+#### Read data
+```{r read_input, include=FALSE, eval=FALSE}
+# TO-DO
+# Florian's analysis
+# CRUK tutorial
+# + other tutorials!
+#  other tutorials and plots...
+# [ ] add peaks GO term enrichment - before merging
+# [ ] add peaks enrichment after merging and after differential accessibility analysis
+
+# follow great tutorial: https://rockefelleruniversity.github.io/RU_ATACseq/presentations/singlepage/RU_ATAC_part2.html
+# but try PEPATACr way of calling consensus?!
+
+# move on top
+metadata_object <- list()
+
+project_name <- "ikzf2_atacseq"
+metadata_object$project_name <- project_name
+
+#if(lib$projectName!="lch") run("common")
+setCurrentAnalysis("")
+#loadLibraries(c("fastcluster", "cluster","data.table", "ggplot2", "LOLA", "simpleCache", "GenomicRanges")) #"ChIPpeakAnno", "org.Hs.eg.db","DiffBind", "limma", 
+
+#
+# reproducing run("atac", "init")
+
+# lib - list of everything :D
+# see Florian's util
+
+# Q:
+# peaks_redo_q0.1?
+# %s/mapped/%s.trimmed.bowtie2.filtered.bam ? filtered???
+
+# Q/Notes:
+# read PEPATAC paper
+# bam - additional filtering?
+# bam - shifting? but should be done before peak calling? or use one of the BigWig (exact) files?
+# if mitochondrial reads are removed using samblaster why there are peaks in narrowPeaks?
+# - [ ] correct settings for single-end as in https://rockefelleruniversity.github.io/RU_ATACseq/presentations/singlepage/RU_ATAC_part2.html
+
+# according to https://rockefelleruniversity.github.io/RU_ATAC_Workshop.html
+#   special settings for MACS2 are needed in order to identify open regions in single-end data!
+
+
+# extra functions
+# apply the same function to each of a given list of named arguments and
+# bundle the results in a data.table with the argument names given in an ID column:
+rblapply <- function(args, fun, id="id", ..., cores=1) {
+  require(data.table)
+  if(cores>1) {
+    require(parallel)
+    res <- parallel::mclapply(X=args, FUN=fun, ..., mc.cores=cores)
+    names(res) <- names(args)
+    res <- rbindlist(res, idcol=id, fill=T)
+    res[,paste(id):=args[get(id)]] # args have been converted to numbers --> convert them back			
+  } else {
+    res <- rbindlist(sapply(X=args, FUN=fun, simplify=FALSE, ...), idcol=id, fill=T)
+  }
+  return(res)
+}
+
+# consensus peaks using PEPATACr
+# http://pepatac.databio.org/en/latest/consensus_peaks/
+# https://github.com/databio/pepatac/tree/master/PEPATACr
+
+# analysis mainly following 
+
+# add to the Docker image!
+# tracktables - Build IGV tracks and HTML reports
+# R packages from: https://rockefelleruniversity.github.io/RU_ATACseq/
+# BiocManager::install('ashr', update = TRUE, ask = FALSE)
+# BiocManager::install('ChIPQC', update = TRUE, ask = FALSE)
+# #BiocManager::install('DiffBind', update = TRUE, ask = FALSE)  # error installing SystemPipeR and DOT missing; needs some system library!
+# BiocManager::install('rtracklayer', update = TRUE, ask = FALSE)
+# BiocManager::install('ChIPseeker', update = TRUE, ask = FALSE)
+# BiocManager::install('soGGi', update = TRUE, ask = FALSE)
+# BiocManager::install('GenomicAlignments', update = TRUE, ask = FALSE)
+# BiocManager::install('DESeq2', update = TRUE, ask = FALSE)
+# BiocManager::install('tracktables', update = TRUE, ask = FALSE)
+# BiocManager::install('clusterProfiler', update = TRUE, ask = FALSE)
+# BiocManager::install('rGREAT', update = TRUE, ask = FALSE)
+# BiocManager::install('MotifDb', update = TRUE, ask = FALSE)
+# BiocManager::install('Biostrings', update = TRUE, ask = FALSE)
+# BiocManager::install('GenomicRanges', update = TRUE, ask = FALSE)
+# BiocManager::install('pheatmap', update = TRUE, ask = FALSE)
+# BiocManager::install('universalmotif', update = TRUE, ask = FALSE)
+# BiocManager::install('seqLogo', update = TRUE, ask = FALSE)
+# BiocManager::install('ATACseqQC', update = TRUE, ask = FALSE)
+# BiocManager::install('JASPAR2020', update = TRUE, ask = FALSE)
+# BiocManager::install('motifmatchr', update = TRUE, ask = FALSE)
+# BiocManager::install('chromVAR', update = TRUE, ask = FALSE)
+# BiocManager::install('ggseqlogo', update = TRUE, ask = FALSE)
+# BiocManager::install('TFBSTools', update = TRUE, ask = FALSE)
+# BiocManager::install('motifStack', update = TRUE, ask = FALSE)
+# BiocManager::install('testthat', update = TRUE, ask = FALSE)
+# BiocManager::install('yaml', update = TRUE, ask = FALSE)
+
+# #BiocManager::install(c("ChIPQC", "ChIPseeker", "tracktables", "MotifDb", "universalmotif", "JASPAR2020"))
+# 
+# #https://www.bioconductor.org/packages/release/bioc/html/Organism.dplyr.html
+# 
+# # http://bioconductor.org/packages/devel/workflows/vignettes/annotation/inst/doc/Annotation_Resources.html
+# # https://bioconductor.org/packages/devel/bioc/vignettes/AnnotationHub/inst/doc/AnnotationHub.html
+# # https://bioconductor.org/packages/devel/bioc/vignettes/AnnotationHub/inst/doc/AnnotationHub-HOWTO.html
+# 
+# # download EnsDb.Hsapiens.v86 or newer using ensembldb; AnnotationHub (or everything using AnnotationHub!)
+# BiocManager::install("ensembldb")
+# BiocManager::install(c("AnnotationHub",
+#                        "Homo.sapiens",
+#                        "Organism.dplyr",
+#                        "TxDb.Hsapiens.UCSC.hg38.knownGene",
+#                        "BSgenome.Hsapiens.UCSC.hg38",
+#                        "org.Hs.eg.db",
+#                        "EnsDb.Hsapiens.v86"),
+#                      update = TRUE, ask = FALSE)
+
+
+
+# http://biocworkshops2019.bioconductor.org.s3-website-us-east-1.amazonaws.com/page/Bioc2019Anno__AnnotationWorkshop/
+
+# check reference used by PEPATAC
+# .gtf is ensembl 86
+# /data_synology_rg3/cancerbits/resources/genomes/refgenie/hg38/refgenie_log.md
+# see gencode.gtf
+#     evidence-based annotation of the human genome (GRCh38), version 23 (Ensembl 81)
+# https://www.biostars.org/p/449108/
+# http://biocworkshops2019.bioconductor.org.s3-website-us-east-1.amazonaws.com/page/Bioc2019Anno__AnnotationWorkshop/
+
+/data_synology_rg3/cancerbits/resources/genomes/refgenie/hg38
+
+
+# library(DiffBind)
+# library(clusterProfiler)
+# library(AnnotationDbi)
+# library(TxDb.Hsapiens.UCSC.hg19.knownGene)
+# library(EnsDb.Hsapiens.v86)
+
+# load peak files
+#peaks         <- data.table::fread(peak_filepath[[1]])
+
+# loadAnnot <- function(type=gsub("^(.*/)(.+)$","\\2",lib$getCurrentAnalysis())) {
+# 	f <- list.files(metaDir(), pattern=paste_("samples",type), full.names=T)
+# 	f <- f[sapply(f, file.size)>0] # drop empty files
+# 	dA <- rblapply(f, fread, "annot_file")
+# 	dA <- merge(dA, fread(metaDir("pat_info.csv")), by="pat_id", all.x=T, all.y=F, cartesian=T)
+# 	dA[,disease_extent_detail:=disease_extent]
+# 	dA[,disease_extent:=gsub("^.*(SS|MS).*$", "\\1", disease_extent)]
+# 	dA[!sex%in%c("M","F"),sex:=NA]
+# 	for(curCol in c("treated","genetics_v600e")) dA[get(curCol)=="" | get(curCol)=="N.d." | get(curCol)=="n/a", paste(curCol):=NA]
+# 	setkey(dA, "sample_name")
+# 	dA
+# }
+
+# Load ATAC-seq data and auxiliary data required for their analysis into local caches.
+
+# - [ ] where are original resources from?
+regionDB=paste0(resources_dir, "/regions/LOLACore/hg38")
+
+repeats <- LOLA::getRegionSet(regionDB = regionDB, collections="ucsc_features", "rmsk.bed")#[[1]]
+
+# load coordinates of repeats:
+simpleCache("repeats", loadUCSCRepeats(), noload=T)
+
+# read in all peaks called in each sample (and throw out those on the mitochondrial and weird parts of the genome):
+# umPeaksDt <- rblapply(project_metadata$narrowPeak_files, fread, "f")# [!grepl("_|M",V1)]
+# table(umPeaksDt$V1)
+# umPeaksDt <- umPeaksDt[!grepl("_|M",V1)] # filtering mitochondrial and extra chromosomes containing underscore _
+# table(umPeaksDt$V1)
+# umPeaks <- with(umPeaksDt, GRanges(V1, IRanges(V2,V3)))
+
+# read in all peaks called in each sample (and throw out those on the mitochondrial and weird parts of the genome):
+# reading in peaks per file
+# test1 <- data.table::fread(project_metadata$narrowPeak_files[1])
+# test2 <- readr::read_tsv(project_metadata$narrowPeak_files[1], col_names = paste0("V", 1:10), col_types = c("ciicicdddi"))
+# glimpse(test1)
+# glimpse(test2)
+# all.equal(as.data.frame(test1), as.data.frame(test2))
+# peaks_list <- purrr::map(.x = project_metadata$sample_name, .f = function(sample_name){
+#   temp_peak <- readr::read_tsv(file = project_metadata$narrowPeak_files[1])
+# })
+
+umPeaksDt <- data.table::rbindlist(sapply(X=project_metadata$narrowPeak_files, FUN=fread, simplify=FALSE), idcol="narrowPeak_files", fill=T)
+table(umPeaksDt$V1)
+umPeaksDt <- umPeaksDt[!grepl("_|M",V1)] # filtering mitochondrial and extra chromosomes containing underscore _
+table(umPeaksDt$V1)
+umPeaks <- with(umPeaksDt, GenomicRanges::GRanges(V1, IRanges(V2,V3)))
+
+# write / plot peak summary:
+#peakNum <- rblapply(project_metadata$narrowPeak_files, fread, "f")[,.N,by=f]
+# .N number of observations in the current group 
+# https://cran.r-project.org/web/packages/data.table/vignettes/datatable-intro.html
+peakNum <- rbindlist(sapply(X=project_metadata$narrowPeak_files, FUN=fread, simplify=FALSE), idcol="narrowPeak_files", fill=T)[,.N,by=sample_name]
+
+#fwrite(peakNum, file=paste0(out_dir, "/peaks.csv"))
+# plotData <- merge(peakNum, dA, by.x="f", by.y="peaks_file")
+# p <- ggplot(plotData, aes(x=reorder(sample_name,-N), y=N, fill=gsub("LCH_","",sample_group))) + geom_bar(stat="identity") + defTheme(flipX=T) + scale_fill_manual(values=colorPalettes$transition_state)
+# gg(p, "peak_num", 4, 4, type="pdf", expand0=TRUE)
+
+# merge overlapping peaks:
+# ?IRanges::reduce
+# generate consensus peaks!
+peaks <- GenomicRanges::reduce(umPeaks)
+
+# remove blacklisted regions (see https://sites.google.com/site/anshulkundaje/projects/blacklists):
+blacklist <- with(fread("wget -O - http://mitra.stanford.edu/kundaje/akundaje/release/blacklists/hg38-human/hg38.blacklist.bed.gz | zcat"),GRanges(V1,IRanges(V2,V3)))
+overlapBlacklist <- GenomicRanges::countOverlaps(peaks, blacklist)>0
+sum(overlapBlacklist)
+overlapRepeats <- GenomicRanges::countOverlaps(peaks, repeats)>0
+sum(overlapRepeats)
+length(peaks)
+peaks <- peaks[!overlapRepeats & !overlapBlacklist]
+peakLen <- BiocGenerics::end(peaks)-BiocGenerics::start(peaks)
+length(peaks)
+
+# 
+
+# annotate each merged peak with the matching source peaks:
+tmp <- sapply(project_metadata$sample_name, function(s) {
+  (GenomicRanges::countOverlaps(peaks, umPeaks[umPeaksDt[,narrowPeak_files==project_metadata[s,narrowPeak_files]],])>0)*1
+})
+
+
+# Annotate with - HOMER, CHiPSeeker or ChIPannot
+
+
+# define peaks:
+simpleCache("atac_peaks", {
+	message("Load auxiliary data...")  # msg() function?
+
+	#simpleCache("hic_javierre", assignToVar="dM")
+	simpleCache("repeats")
+
+	# only use interactions for expressed genes:	
+	dM <- dM[targetName%in%allExprGenes,]
+
+	# extend contact regions by 1kb in either direction:
+	extension <- 1000
+	baitGr <- with(dM, GRanges(chromBait, IRanges(startBait-extension, endBait+extension)))
+	oeGr <- with(dM, GRanges(chromOe, IRanges(startOe-extension, endOe+extension)))
+
+	message("Read and process peaks...")
+	
+	# read in all peaks called in each sample (and throw out those on the mitochondrial and weird parts of the genome):
+	umPeaksDt <- rblapply(dA[,peaks_file], fread, "f")[!grepl("_|M",V1)]	
+	umPeaks <- with(umPeaksDt, GRanges(V1, IRanges(V2,V3)))
+	
+	# write / plot peak summary:
+	peakNum <- rblapply(dA[,peaks_file], fread, "f")[,.N,by=f]
+	fwrite(peakNum, file=resultsDir("peaks.csv"))
+	plotData <- merge(peakNum, dA, by.x="f", by.y="peaks_file")
+	p <- ggplot(plotData, aes(x=reorder(sample_name,-N), y=N, fill=gsub("LCH_","",sample_group))) + geom_bar(stat="identity") + defTheme(flipX=T) + scale_fill_manual(values=colorPalettes$transition_state)
+	gg(p, "peak_num", 4, 4, type="pdf", expand0=TRUE)
+
+	# merge overlapping peaks:
+	peaks <- reduce(umPeaks)
+
+	# remove blacklisted regions (see https://sites.google.com/site/anshulkundaje/projects/blacklists):
+	blacklist <- with(fread("wget -O - http://mitra.stanford.edu/kundaje/akundaje/release/blacklists/hg38-human/hg38.blacklist.bed.gz | zcat"), GRanges(V1,IRanges(V2,V3)))
+	overlapBlacklist <- countOverlaps(peaks, blacklist)>0
+	overlapRepeats <- countOverlaps(peaks, repeats)>0
+	peaks <- peaks[!overlapRepeats & !overlapBlacklist]
+	peakLen <- end(peaks)-start(peaks)
+
+	# annotate each merged peak with the matching source peaks:
+	tmp <- sapply(dA$sample_name, function(s) {
+		(countOverlaps(peaks, umPeaks[umPeaksDt[,f==dA[s,peaks_file]],])>0)*1
+	})
+	
+	# pack all peak info in a big table:
+	peaksDt <- data.table(chrom=as.character(seqnames(peaks)), start=start(peaks), end=end(peaks), tmp)
+	peaksDt[,rid:=paste0("r", 1:nrow(peaksDt))]
+
+	msg("Annotate peaks...")
+	
+	# annotate with genes by checking overlaps of peaks with pcHi-C data:
+	o1 <- findOverlaps(peaks, oeGr, ignore.strand=T)
+	o2 <- findOverlaps(peaks, baitGr, ignore.strand=T)
+	geneOverlaps <- rbind(data.table(q=queryHits(o1), n=dM[subjectHits(o1),targetName]), data.table(q=queryHits(o2), n=dM[subjectHits(o2),targetName])) #data.table(q=queryHits(o1), n=dM[subjectHits(o1),targetName]) #
+	geneOverlapsAgg <- geneOverlaps[,.(gnames=paste(unique(sort(n)),collapse=";")), by=q]
+	peaksDt[geneOverlapsAgg$q, geneSymbols:=geneOverlapsAgg$gnames]
+	peaksDt[, overlapByHiC:=!is.na(geneSymbols)]
+
+	# see utils.R for loadTranscriptAnnotation using /data_synology_rg3/cancerbits/resources/genomes/hg38_cdna/transcripts_ensembl98_biomart.txt:
+# 	loadTranscriptAnnotation = function(genomeBuild, nameCol="Gene name", typeCol="Transcript type", trIdCol="Transcript stable ID", gIdCol="Gene stable ID", chromCol="Chromosome/scaffold name", startCol="Gene start (bp)", endCol="Gene end (bp)", strandCol="Strand") {
+#     transcriptAnnotation <- unique(fread(tail(system(paste0("ls ", lib$resourceDir("genomes/",genomeBuild,"_cdna/transcripts_*")),intern=TRUE),n=1)))[get(chromCol)%in%c(1:100,"X","Y","M","MT")]
+# 
+#     transcriptAnnotation[,chrom:=paste0("chr",gsub("MT","M",get(chromCol)))]
+#     transcriptAnnotation[,start:=get(startCol)]
+#     transcriptAnnotation[,end:=get(endCol)]
+#     transcriptAnnotation[,tss:=start]
+#     transcriptAnnotation[,strand:=get(strandCol)]
+#     transcriptAnnotation[strand==-1,tss:=end]
+#     transcriptAnnotation[,ensT:=get(trIdCol)]
+#     transcriptAnnotation[,ensG:=get(gIdCol)]
+#     transcriptAnnotation[,type:=get(typeCol)]
+#     transcriptAnnotation[,geneSymbol:=gsub("\\.\\d+", "", get(nameCol))]
+# 
+#     setkey(transcriptAnnotation,ensT)
+# 
+#     transcriptAnnotation
+#   }
+
+	tAnnot <- lib$loadTranscriptAnnotation(genomeVer)
+	o <- distanceToNearest(peaks, lib$dtToGr(tAnnot, "chrom", "tss", "tss"), ignore.strand=T)
+	maxDist <- 50000
+	o <- o[o@elementMetadata$distance<=maxDist,]
+	peaksDt[queryHits(o), geneSymbols:=paste(geneSymbols, tAnnot[subjectHits(o), geneSymbol], sep=";")]
+	peaksDt[queryHits(o), distToNextGene:=o@elementMetadata$distance]
+	peaksDt[,geneSymbols:=sapply(geneSymbols, function(g) sort(unique(unlist(strsplit(gsub("^NA;", "", g),";"))) ))]
+
+	peaksDt[,isPromoPeak:=F]
+	peaksDt[unique(queryHits(o[o@elementMetadata$distance<=1000,])),isPromoPeak:=T]
+	nPromoterPeaks <- peaksDt[,sum(isPromoPeak)]
+	msgF("n(promoter)=%d [%.1f%%], n(distal)=%d", nPromoterPeaks, nPromoterPeaks/length(peaks)*100, length(peaks)-nPromoterPeaks)
+
+	geneOverlaps <- rbindlist(list(
+		hiC=geneOverlaps, 
+		proximity=data.table(q=queryHits(o), n=tAnnot[subjectHits(o), geneSymbol])
+	), idcol="linkType")
+
+	write.table(peaksDt[,.(chrom,start,end,sprintf("%s:%s", rid, geneSymbols))], file=resultsDir("peaks.bed"), col.names=F, row.names=F, sep="\t", quote=F)
+
+	lib$pdfPlot("hist_peak_len_filtered", 4, 4)
+	hist(peaksDt[,end-start])
+	dev.off()
+
+	plotData <- melt(peaksDt, id.vars=c("rid","geneSymbols","chrom","start","end"))[value==1, .N, by=variable]
+	plotData <- cbind(plotData, dA[as.character(plotData$variable),])
+	p <- ggplot(plotData, aes(x=reorder(sample_name,-N), y=N, fill=gsub("LCH_","",sample_group))) + geom_bar(stat="identity") + defTheme(flipX=T) + scale_fill_manual(values=colorPalettes$transition_state)
+	gg(p, "peak_num_filtered_merged", 4, 4, type="pdf", expand0=TRUE)
+
+	list(peaks=peaks, peaksDt=peaksDt, geneOverlaps=geneOverlaps)
+}, noload=T, recreate=F)
+
+```
+
+#### Analysis parameters
+
+```{r parameters, include=FALSE}
+
+```
