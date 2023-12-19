@@ -1,0 +1,5 @@
+Design	Numerator	Denominator	Label	Exclude	Significant	SignificantUp	SignificantDown
+NFATc1	genotype_NFATc1_ko_vs_WT	NA	NFATc1 versus WT for no	FALSE	465	199	266
+NFATc1	genotype_NFATc1_ko_vs_WT,genotypeNFATc1_ko.stimulationyes	NA	NFATc1 versus WT for yes	FALSE	214	89	125
+NFATc1	stimulation_yes_vs_no	NA	yes versus no for WT	FALSE	9574	4797	4777
+NFATc1	stimulation_yes_vs_no,genotypeNFATc1_ko.stimulationyes	NA	yes versus no for NFATc1	FALSE	8380	4120	4260
